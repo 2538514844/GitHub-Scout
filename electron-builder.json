@@ -1,0 +1,16 @@
+{
+  "appId": "com.github-scout.app",
+  "productName": "GitHub Scout",
+  "directories": {
+    "output": "release"
+  },
+  "win": {
+    "target": ["portable"],
+    "icon": null
+  },
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "package.json"
+  ]
+}
