@@ -313,6 +313,141 @@ function httpsPostJson(url, token, payload) {
   });
 }
 
+function normalizeDurationMs(value) {
+  const duration = Number(value);
+  if (!Number.isFinite(duration) || duration <= 0) {
+    return null;
+  }
+  return Math.round(duration);
+}
+
+function getTtsCacheMetaPath(cachePath) {
+  return `${cachePath}.json`;
+}
+
+function readTtsCacheMeta(cachePath) {
+  const metaPath = getTtsCacheMetaPath(cachePath);
+  if (!fs.existsSync(metaPath)) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    const durationMs = normalizeDurationMs(parsed?.durationMs);
+    if (!durationMs) {
+      return null;
+    }
+
+    return {
+      durationMs,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeTtsCacheMeta(cachePath, durationMs) {
+  const normalizedDurationMs = normalizeDurationMs(durationMs);
+  if (!normalizedDurationMs) {
+    return null;
+  }
+
+  const metaPath = getTtsCacheMetaPath(cachePath);
+  fs.writeFileSync(metaPath, JSON.stringify({
+    durationMs: normalizedDurationMs,
+    updatedAt: new Date().toISOString(),
+  }, null, 2), 'utf8');
+
+  return {
+    durationMs: normalizedDurationMs,
+    metaPath,
+  };
+}
+
+function estimateWavDurationMs(audioPath) {
+  try {
+    const buffer = fs.readFileSync(audioPath);
+    if (buffer.length < 12) {
+      return null;
+    }
+
+    if (buffer.toString('ascii', 0, 4) !== 'RIFF' || buffer.toString('ascii', 8, 12) !== 'WAVE') {
+      return null;
+    }
+
+    let byteRate = null;
+    let dataSize = null;
+    let offset = 12;
+
+    while (offset + 8 <= buffer.length) {
+      const chunkId = buffer.toString('ascii', offset, offset + 4);
+      const chunkSize = buffer.readUInt32LE(offset + 4);
+      const chunkDataStart = offset + 8;
+
+      if (chunkId === 'fmt ' && chunkSize >= 12 && chunkDataStart + 12 <= buffer.length) {
+        byteRate = buffer.readUInt32LE(chunkDataStart + 8);
+      } else if (chunkId === 'data') {
+        dataSize = chunkSize;
+      }
+
+      if (byteRate && dataSize) {
+        break;
+      }
+
+      offset += 8 + chunkSize + (chunkSize % 2);
+    }
+
+    if (!byteRate || !dataSize) {
+      return null;
+    }
+
+    return normalizeDurationMs((dataSize / byteRate) * 1000);
+  } catch {
+    return null;
+  }
+}
+
+function estimateMp3DurationMs(audioPath, ttsConfig) {
+  try {
+    const stats = fs.statSync(audioPath);
+    const bitrate = Number(ttsConfig?.bitrate);
+    if (!stats.isFile() || stats.size <= 0 || !Number.isFinite(bitrate) || bitrate <= 0) {
+      return null;
+    }
+
+    return normalizeDurationMs((stats.size * 8 * 1000) / bitrate);
+  } catch {
+    return null;
+  }
+}
+
+function estimateAudioDurationMs(audioPath, ttsConfig) {
+  const extension = path.extname(audioPath).toLowerCase();
+  if (extension === '.wav') {
+    return estimateWavDurationMs(audioPath);
+  }
+
+  if (extension === '.mp3') {
+    return estimateMp3DurationMs(audioPath, ttsConfig);
+  }
+
+  return null;
+}
+
+function resolveCachedAudioDurationMs(cachePath, ttsConfig) {
+  const cachedMeta = readTtsCacheMeta(cachePath);
+  if (cachedMeta?.durationMs) {
+    return cachedMeta.durationMs;
+  }
+
+  const estimatedDurationMs = estimateAudioDurationMs(cachePath, ttsConfig);
+  if (estimatedDurationMs) {
+    writeTtsCacheMeta(cachePath, estimatedDurationMs);
+  }
+
+  return estimatedDurationMs;
+}
+
 async function synthesizeTtsToCache(text, ttsConfig) {
   const hash = crypto.createHash('sha256').update(JSON.stringify({
     text,
@@ -332,10 +467,11 @@ async function synthesizeTtsToCache(text, ttsConfig) {
   const cachePath = path.join(TTS_CACHE_DIR, `${hash}.${extension}`);
 
   if (fs.existsSync(cachePath)) {
+    const durationMs = resolveCachedAudioDurationMs(cachePath, ttsConfig);
     return {
       audioPath: cachePath,
       audioUrl: pathToFileURL(cachePath).href,
-      durationMs: null,
+      durationMs,
       cached: true,
     };
   }
@@ -374,11 +510,18 @@ async function synthesizeTtsToCache(text, ttsConfig) {
 
   const audioBuffer = Buffer.from(hexAudio, 'hex');
   fs.writeFileSync(cachePath, audioBuffer);
+  const durationMs =
+    normalizeDurationMs(response?.extra_info?.audio_length)
+    || estimateAudioDurationMs(cachePath, ttsConfig);
+
+  if (durationMs) {
+    writeTtsCacheMeta(cachePath, durationMs);
+  }
 
   return {
     audioPath: cachePath,
     audioUrl: pathToFileURL(cachePath).href,
-    durationMs: response?.extra_info?.audio_length || null,
+    durationMs,
     cached: false,
   };
 }

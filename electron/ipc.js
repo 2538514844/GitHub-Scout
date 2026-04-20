@@ -388,246 +388,58 @@ function buildLocalImageManifestBridge(images) {
 </script>`;
 }
 
-function buildInjectedLocalImageRuntime(images) {
-  const imageListJson = stringifyInlineJson(
-    Array.isArray(images) ? images.filter((item) => typeof item === 'string' && item.trim()) : [],
-  );
+function buildPageAudioDurationBridge(audioDurationMs) {
+  const normalizedDurationMs = Number.isFinite(Number(audioDurationMs)) && Number(audioDurationMs) > 0
+    ? Math.round(Number(audioDurationMs))
+    : null;
 
-  return `
-<style id="repo-local-image-runtime-style">
-  #repo-local-image-overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 2147483647;
-    pointer-events: none;
-    opacity: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  #repo-local-image-overlay.is-open {
-    opacity: 1;
-  }
-
-  #repo-local-image-view {
-    width: 720px;
-    max-width: calc(100vw - 240px);
-    max-height: calc(100vh - 240px);
-    object-fit: contain;
-    object-position: center;
-    display: block;
-    border: none;
-    outline: none;
-    box-shadow: none;
-    border-radius: 0;
-    background: transparent;
-    opacity: 0;
-    transform: translateY(16px);
-    transition: opacity 520ms cubic-bezier(0.22, 1, 0.36, 1), transform 520ms cubic-bezier(0.22, 1, 0.36, 1);
-  }
-
-  #repo-local-image-overlay.is-open #repo-local-image-view,
-  #repo-local-image-overlay.is-switching-in #repo-local-image-view {
-    opacity: 1;
-    transform: translateY(0);
-  }
-
-  #repo-local-image-overlay.is-switching-out #repo-local-image-view {
-    opacity: 0;
-    transform: translateY(-12px);
-    transition: opacity 360ms cubic-bezier(0.22, 1, 0.36, 1), transform 360ms cubic-bezier(0.22, 1, 0.36, 1);
-  }
-
-  #local-image-modal {
-    display: none !important;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    #repo-local-image-view,
-    #repo-local-image-overlay.is-switching-out #repo-local-image-view,
-    #repo-local-image-overlay.is-switching-in #repo-local-image-view {
-      opacity: 1 !important;
-      transform: none !important;
-      transition: none !important;
-    }
-  }
-</style>
-<div id="repo-local-image-overlay" aria-hidden="true">
-  <img id="repo-local-image-view" alt="Selected Repository Image" />
-</div>
-<script id="repo-local-image-runtime-script">
-(function () {
-  const images = ${imageListJson};
-  if (!Array.isArray(images) || images.length === 0) {
-    return;
-  }
-
-  const overlay = document.getElementById('repo-local-image-overlay');
-  const imageView = document.getElementById('repo-local-image-view');
-  if (!overlay || !imageView) {
-    return;
-  }
-
-  const prefersReducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const OUT_MS = 360;
-  const IN_MS = 520;
-  const HOLD_MS = 2400;
-  const START_DELAY_MS = 1600;
-  let currentIndex = -1;
-  let sequenceFinished = false;
-  let imageTimer = null;
-
-  function clearTimer() {
-    if (imageTimer) {
-      clearTimeout(imageTimer);
-      imageTimer = null;
-    }
-  }
-
-  function applyImageSource(src) {
-    imageView.src = src;
-  }
-
-  function finishSequence() {
-    if (sequenceFinished) {
-      return;
-    }
-
-    clearTimer();
-
-    if (prefersReducedMotion) {
-      overlay.classList.remove('is-open');
-      overlay.classList.remove('is-switching-in');
-      overlay.classList.remove('is-switching-out');
-      imageView.removeAttribute('src');
-      sequenceFinished = true;
-      return;
-    }
-
-    overlay.classList.remove('is-switching-in');
-    overlay.classList.add('is-switching-out');
-
-    setTimeout(() => {
-      overlay.classList.remove('is-open');
-      overlay.classList.remove('is-switching-out');
-      imageView.removeAttribute('src');
-      sequenceFinished = true;
-    }, OUT_MS);
-  }
-
-  function scheduleNextSwitch() {
-    if (sequenceFinished) {
-      return;
-    }
-
-    clearTimer();
-    imageTimer = setTimeout(() => {
-      if (currentIndex >= images.length - 1) {
-        finishSequence();
-        return;
-      }
-      switchToNextImage();
-    }, HOLD_MS);
-  }
-
-  function switchToNextImage() {
-    if (sequenceFinished) {
-      return;
-    }
-
-    const nextIndex = currentIndex + 1;
-    if (nextIndex >= images.length) {
-      finishSequence();
-      return;
-    }
-
-    if (prefersReducedMotion) {
-      applyImageSource(images[nextIndex]);
-      currentIndex = nextIndex;
-      scheduleNextSwitch();
-      return;
-    }
-
-    overlay.classList.remove('is-switching-in');
-    overlay.classList.add('is-switching-out');
-
-    setTimeout(() => {
-      applyImageSource(images[nextIndex]);
-      currentIndex = nextIndex;
-      overlay.classList.remove('is-switching-out');
-      overlay.classList.add('is-open');
-      overlay.classList.add('is-switching-in');
-
-      setTimeout(() => {
-        overlay.classList.remove('is-switching-in');
-        scheduleNextSwitch();
-      }, IN_MS);
-    }, OUT_MS);
-  }
-
-  function showInitialImage() {
-    if (sequenceFinished) {
-      return;
-    }
-
-    applyImageSource(images[0]);
-    currentIndex = 0;
-    overlay.classList.add('is-open');
-    overlay.classList.remove('is-switching-out');
-    overlay.classList.add('is-switching-in');
-
-    if (prefersReducedMotion) {
-      overlay.classList.remove('is-switching-in');
-      scheduleNextSwitch();
-      return;
-    }
-
-    setTimeout(() => {
-      overlay.classList.remove('is-switching-in');
-      scheduleNextSwitch();
-    }, IN_MS);
-  }
-
-  function startSequence() {
-    setTimeout(() => {
-      showInitialImage();
-    }, START_DELAY_MS);
-  }
-
-  if (document.fonts && document.fonts.ready) {
-    Promise.race([
-      document.fonts.ready,
-      new Promise((resolve) => setTimeout(resolve, 1500)),
-    ]).then(() => {
-      requestAnimationFrame(() => {
-        setTimeout(startSequence, 50);
-      });
-    }).catch(() => {
-      startSequence();
-    });
-  } else {
-    startSequence();
-  }
-})();
-</script>`;
+  return `<script id="repo-page-audio-duration-script">window.__PAGE_AUDIO_DURATION_MS__ = ${normalizedDurationMs === null ? 'null' : normalizedDurationMs};</script>`;
 }
 
-function injectLocalImageManifestIntoHtml(htmlContent, images) {
+function injectPageAudioDurationIntoHtml(htmlContent, audioDurationMs) {
   const html = String(htmlContent || '').trim();
+  if (!html) {
+    return html;
+  }
+
+  const durationBridge = buildPageAudioDurationBridge(audioDurationMs);
+  const withoutOldBridge = html.replace(/\s*<script[^>]+id=["']repo-page-audio-duration-script["'][\s\S]*?<\/script>/ig, '');
+
+  if (/<head[^>]*>/i.test(withoutOldBridge)) {
+    return withoutOldBridge.replace(/<head([^>]*)>/i, `<head$1>\n${durationBridge}`);
+  }
+
+  if (/<html[^>]*>/i.test(withoutOldBridge)) {
+    return withoutOldBridge.replace(/<html([^>]*)>/i, `<html$1><head>${durationBridge}</head>`);
+  }
+
+  return `<!DOCTYPE html><html><head>${durationBridge}</head><body>${withoutOldBridge}</body></html>`;
+}
+
+function injectLocalImageManifestIntoHtml(htmlContent, images, audioDurationMs = null) {
+  let html = injectPageAudioDurationIntoHtml(htmlContent, audioDurationMs);
   const normalizedImages = Array.isArray(images)
     ? images.filter((item) => typeof item === 'string' && item.trim())
     : [];
 
-  if (!html || normalizedImages.length === 0) {
+  if (!html) {
     return html;
   }
 
-  if (/<script[^>]+id=["']repo-local-image-runtime-script["']/i.test(html)) {
+  html = html
+    .replace(/\s*<style[^>]+id=["']repo-local-image-runtime-style["'][\s\S]*?<\/style>/ig, '')
+    .replace(/\s*<div[^>]+id=["']repo-local-image-overlay["'][\s\S]*?<\/div>/ig, '')
+    .replace(/\s*<script[^>]+id=["']repo-local-image-runtime-script["'][\s\S]*?<\/script>/ig, '');
+
+  if (normalizedImages.length === 0) {
     return html;
   }
 
-  const injection = `${buildLocalImageManifestBridge(normalizedImages)}\n${buildInjectedLocalImageRuntime(normalizedImages)}`;
+  if (/<script[^>]+id=["']local-image-manifest["']/i.test(html)) {
+    return html;
+  }
+
+  const injection = buildLocalImageManifestBridge(normalizedImages);
 
   if (/<\/body>/i.test(html)) {
     return html.replace(/<\/body>/i, `${injection}\n</body>`);
@@ -1485,8 +1297,7 @@ async function processSelectedReadmeRepo({
     const htmlFileName = 'index.html';
     const htmlFilePath = path.join(repoDirPath, htmlFileName);
     const htmlEntryPath = `${repoDirName}/${htmlFileName}`;
-    const finalHtml = injectLocalImageManifestIntoHtml(extractedHtml, imageCopyResult.images);
-    fs.writeFileSync(htmlFilePath, finalHtml.trim(), 'utf8');
+    const htmlForNarration = extractedHtml.trim();
     log(`[README] ${repo.name} HTML 已保存: ${htmlEntryPath}`, 'success');
 
     log(`[README] ${repo.name} 开始生成解说词`, 'info');
@@ -1494,7 +1305,7 @@ async function processSelectedReadmeRepo({
       { role: 'system', content: narrationSystemPrompt },
       {
         role: 'user',
-        content: buildReadmeNarrationPrompt(repo, finalHtml),
+        content: buildReadmeNarrationPrompt(repo, htmlForNarration),
       },
     ], {
       timeout: 180000,
@@ -1518,6 +1329,13 @@ async function processSelectedReadmeRepo({
     const audioFilePath = path.join(repoDirPath, audioFileName);
     const audioEntryPath = `${repoDirName}/${audioFileName}`;
     fs.copyFileSync(audioResult.audioPath, audioFilePath);
+    const finalHtml = injectLocalImageManifestIntoHtml(
+      extractedHtml,
+      imageCopyResult.images,
+      audioResult.durationMs,
+    );
+    fs.writeFileSync(htmlFilePath, finalHtml.trim(), 'utf8');
+    log(`[README] ${repo.name} HTML 宸蹭繚瀛? ${htmlEntryPath}`, 'success');
     log(`[README] ${repo.name} TTS 已保存: ${audioEntryPath}${audioResult.cached ? ' (复用缓存)' : ''}`, 'success');
 
     return {
@@ -1788,8 +1606,7 @@ ${readmeResult.content}`,
       const htmlFileName = 'index.html';
       const htmlFilePath = path.join(repoDirPath, htmlFileName);
       const htmlEntryPath = `${repoDirName}/${htmlFileName}`;
-      const finalHtml = injectLocalImageManifestIntoHtml(extractedHtml, imageCopyResult.images);
-      fs.writeFileSync(htmlFilePath, finalHtml.trim(), 'utf8');
+      const htmlForNarration = extractedHtml.trim();
       log(`[README] ${repo.name} HTML 已保存: ${htmlEntryPath}`, 'success');
 
       log(`[README] ${repo.name} 开始生成解说词`, 'info');
@@ -1797,7 +1614,7 @@ ${readmeResult.content}`,
         { role: 'system', content: narrationSystemPrompt },
         {
           role: 'user',
-          content: buildReadmeNarrationPrompt(repo, finalHtml),
+          content: buildReadmeNarrationPrompt(repo, htmlForNarration),
         },
       ], {
         timeout: 180000,
@@ -1821,6 +1638,13 @@ ${readmeResult.content}`,
       const audioFilePath = path.join(repoDirPath, audioFileName);
       const audioEntryPath = `${repoDirName}/${audioFileName}`;
       fs.copyFileSync(audioResult.audioPath, audioFilePath);
+      const finalHtml = injectLocalImageManifestIntoHtml(
+        extractedHtml,
+        imageCopyResult.images,
+        audioResult.durationMs,
+      );
+      fs.writeFileSync(htmlFilePath, finalHtml.trim(), 'utf8');
+      log(`[README] ${repo.name} HTML 宸蹭繚瀛? ${htmlEntryPath}`, 'success');
       log(`[README] ${repo.name} TTS 已保存: ${audioEntryPath}${audioResult.cached ? ' (复用缓存)' : ''}`, 'success');
 
       successItems.push({
