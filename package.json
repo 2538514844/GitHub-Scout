@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5290 && electron .\"",
+    "electron:dev": "node scripts/electron-dev.js",
     "electron:build": "vite build && electron-builder"
   },
   "dependencies": {
@@ -13,6 +13,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@electron/get": "^4.0.3",
     "@vitejs/plugin-react": "^4.3.0",
     "antd": "^5.24.0",
     "concurrently": "^9.1.0",

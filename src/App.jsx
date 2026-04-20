@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+﻿import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ConfigPanel from './components/ConfigPanel';
 import RepoTable from './components/RepoTable';
+import RepoImagePanel from './components/RepoImagePanel';
 import AnalysisView from './components/AnalysisView';
 import Auth from './components/Auth';
 
@@ -20,7 +21,11 @@ function App() {
   const [activeLogTab, setActiveLogTab] = useState('fetch');
   const [authUser, setAuthUser] = useState(null);
   const [selectedRepoName, setSelectedRepoName] = useState(null);
+  const [selectedRepoNames, setSelectedRepoNames] = useState([]);
+  const [repoImageMap, setRepoImageMap] = useState({});
+  const [repoImageError, setRepoImageError] = useState('');
   const [repoTags, setRepoTags] = useState({});
+  const [fetchingReadmes, setFetchingReadmes] = useState(false);
 
   // Fetch filter state
   const [showFilter, setShowFilter] = useState(false);
@@ -80,11 +85,11 @@ function App() {
       setLogs(prev => [...prev, entry]);
       if (entry.message.startsWith('[GitHub]')) {
         setAuthLogs(prev => [...prev, entry]);
-      } else if (entry.message.startsWith('[爬虫]')) {
+      } else if (entry.message.startsWith('[爬虫]') || entry.message.startsWith('[鐖櫕]')) {
         setFetchLogs(prev => [...prev, entry]);
-      } else if (entry.message.startsWith('[AI]')) {
+      } else if (entry.message.startsWith('[AI]') || entry.message.startsWith('[README]')) {
         setAnalyzeLogs(prev => [...prev, entry]);
-      } else if (entry.message.startsWith('[配置]')) {
+      } else if (entry.message.startsWith('[配置]') || entry.message.startsWith('[閰嶇疆]')) {
         setConfigLogs(prev => [...prev, entry]);
       }
     });
@@ -123,7 +128,7 @@ function App() {
     if (candidates.length === 0) {
       return {
         ok: false,
-        message: '请先至少配置一个可用的 AI 提供商',
+        message: '请先至少配置一个可用的 AI 提供商。',
       };
     }
 
@@ -159,7 +164,7 @@ function App() {
 
     return {
       ok: false,
-      message: failures.join('；') || '没有可用的 AI 提供商',
+      message: failures.join('；') || '没有可用的 AI 提供商。',
     };
   }, [getAvailableAiCandidates]);
 
@@ -185,6 +190,10 @@ function App() {
     setRepos([]);
     setAnalysis(null);
     setRepoTags({});
+    setRepoImageMap({});
+    setRepoImageError('');
+    setSelectedRepoNames([]);
+    setSelectedRepoName(null);
     setActiveLogTab('fetch');
     setShowLogs(true);
 
@@ -210,7 +219,7 @@ function App() {
     try {
       const selection = await pickFastestAvailableAi();
       if (!selection.ok) {
-        setAnalysis({ ok: false, message: `API连接失败: ${selection.message}` });
+        setAnalysis({ ok: false, message: `API 连接失败: ${selection.message}` });
         setAnalyzing(false);
         return;
       }
@@ -242,8 +251,129 @@ function App() {
     }
   };
 
+  const handleFetchReadmes = async () => {
+    if (selectedRepoNames.length === 0) return;
+
+    const selectedRepos = repos.filter(repo => selectedRepoNames.includes(repo.name));
+    if (selectedRepos.length === 0) return;
+
+    setAnalyzeLogs([]);
+    setFetchingReadmes(true);
+    setAnalysis(null);
+    setActiveLogTab('analyze');
+    setShowLogs(true);
+
+    try {
+      const selection = await pickFastestAvailableAi();
+      if (!selection.ok) {
+        setAnalysis({
+          ok: false,
+          title: 'README HTML 轮播输出',
+          message: `AI 连接失败: ${selection.message}`,
+        });
+        setFetchingReadmes(false);
+        return;
+      }
+
+      const { candidate, testResult } = selection;
+      const config = {
+        baseUrl: candidate.baseUrl,
+        apiKey: candidate.apiKey,
+        model: candidate.model,
+        systemPrompt: candidate.systemPrompt,
+      };
+
+      setAnalyzeLogs(prev => ([
+        ...prev,
+        {
+          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+          level: 'info',
+          message: `[README] 已选择最快可用提供商: ${candidate.vendor}${testResult.model ? ` (${testResult.model})` : ''}`,
+        },
+      ]));
+
+      const result = await window.electronAPI.fetchSelectedReadmes({
+        repos: selectedRepos,
+        aiConfig: config,
+        repoImages: Object.fromEntries(
+          selectedRepos.map((repo) => [repo.name, repoImageMap[repo.name] || []]),
+        ),
+      });
+      setAnalysis(result);
+    } catch (err) {
+      setAnalysis({
+        ok: false,
+        title: 'README HTML 轮播输出',
+        message: err.message || 'README 生成失败',
+      });
+    } finally {
+      setFetchingReadmes(false);
+    }
+  };
+
   const handleRepoClick = (name) => {
     setSelectedRepoName(name);
+  };
+
+  const handlePickRepoImages = async (repoName) => {
+    setRepoImageError('');
+
+    try {
+      if (typeof window.electronAPI?.selectRepoImages !== 'function') {
+        throw new Error('当前窗口还没有加载最新的图片选择能力，请先重启应用。');
+      }
+
+      const currentPaths = repoImageMap[repoName] || [];
+      const result = await window.electronAPI.selectRepoImages({
+        repoName,
+        currentPaths,
+      });
+
+      if (!result?.ok) {
+        return;
+      }
+
+      setRepoImageMap((prev) => ({
+        ...prev,
+        [repoName]: result.filePaths || [],
+      }));
+    } catch (error) {
+      setRepoImageError(error.message || '选择图片失败');
+    }
+  };
+
+  const handleClearRepoImages = (repoName) => {
+    setRepoImageMap((prev) => ({
+      ...prev,
+      [repoName]: [],
+    }));
+  };
+
+  const handlePickImagesSequentially = async () => {
+    setRepoImageError('');
+    const selectedRepos = repos.filter((repo) => selectedRepoNames.includes(repo.name));
+
+    try {
+      if (typeof window.electronAPI?.selectRepoImages !== 'function') {
+        throw new Error('当前窗口还没有加载最新的图片选择能力，请先重启应用。');
+      }
+
+      for (const repo of selectedRepos) {
+        const result = await window.electronAPI.selectRepoImages({
+          repoName: repo.name,
+          currentPaths: repoImageMap[repo.name] || [],
+        });
+
+        if (result?.ok) {
+          setRepoImageMap((prev) => ({
+            ...prev,
+            [repo.name]: result.filePaths || [],
+          }));
+        }
+      }
+    } catch (error) {
+      setRepoImageError(error.message || '选择图片失败');
+    }
   };
 
   const handleTestConnection = async (config) => {
@@ -265,6 +395,7 @@ function App() {
   };
 
   const currentVendor = aiConfig?.vendors?.[aiConfig?.vendor] || aiConfig?.vendors?.custom || {};
+  const selectedRepos = repos.filter((repo) => selectedRepoNames.includes(repo.name));
 
   return (
     <div className="app">
@@ -292,7 +423,7 @@ function App() {
       <header className="app-header">
         <div className="header-left">
           <h1 className="app-title">GitHub Scout</h1>
-          <span className="app-subtitle">热门仓库爬取 & AI分析</span>
+          <span className="app-subtitle">热门仓库爬取 & AI 分析</span>
         </div>
         <div className="header-right">
           <Auth onAuthChange={setAuthUser} />
@@ -318,7 +449,7 @@ function App() {
           <button
             className={`fetch-btn ${loading ? 'loading' : ''}`}
             onClick={handleFetchRepos}
-            disabled={loading || analyzing}
+            disabled={loading || analyzing || fetchingReadmes}
           >
             {loading ? (
               <span><span className="spinner" /> 爬取中...</span>
@@ -329,9 +460,20 @@ function App() {
           <button
             className="analyze-btn"
             onClick={handleAnalyze}
-            disabled={repos.length === 0 || analyzing}
+            disabled={repos.length === 0 || analyzing || loading || fetchingReadmes}
           >
-            {analyzing ? 'AI分析中...' : repos.length > 0 ? `AI分析 (${repos.length})` : 'AI分析'}
+            {analyzing ? 'AI 分析中...' : repos.length > 0 ? `AI 分析 (${repos.length})` : 'AI 分析'}
+          </button>
+          <button
+            className="readme-btn"
+            onClick={handleFetchReadmes}
+            disabled={selectedRepoNames.length === 0 || loading || analyzing || fetchingReadmes}
+          >
+            {fetchingReadmes
+              ? '\u722C\u53D6\u63CF\u8FF0\u4E2D...'
+              : selectedRepoNames.length > 0
+                ? `\u722C\u53D6\u63CF\u8FF0 (${selectedRepoNames.length})`
+                : '\u722C\u53D6\u63CF\u8FF0'}
           </button>
           <button
             className={`log-toggle-btn ${showLogs ? 'active' : ''}`}
@@ -343,7 +485,7 @@ function App() {
             className="config-toggle"
             onClick={() => setShowConfig(!showConfig)}
           >
-            {showConfig ? '收起' : 'AI配置'}
+            {showConfig ? '收起' : 'AI 配置'}
           </button>
         </div>
       </header>
@@ -356,7 +498,7 @@ function App() {
               <span>关键词</span>
               <input
                 type="text"
-                placeholder="多个关键词用逗号分隔，如：AI, react, ..."
+                placeholder="多个关键词用逗号分隔，例如：AI, react"
                 value={filterConfig.keyword}
                 onChange={e => setFilterConfig(prev => ({ ...prev, keyword: e.target.value }))}
               />
@@ -379,7 +521,7 @@ function App() {
               />
             </label>
             <label>
-              <span>爬取页数</span>
+              <span>抓取页数</span>
               <input
                 type="number"
                 min="1"
@@ -464,9 +606,25 @@ function App() {
         )}
 
         <div className="right-panel">
-          <RepoTable repos={repos} repoTags={repoTags} selectedRepoName={selectedRepoName} />
+          <RepoTable
+            repos={repos}
+            repoTags={repoTags}
+            selectedRepoName={selectedRepoName}
+            selectedRepoNames={selectedRepoNames}
+            onSelectionChange={setSelectedRepoNames}
+          />
 
-          {showLogs && (logs.length > 0 || loading || analyzing) && (
+          <RepoImagePanel
+            selectedRepos={selectedRepos}
+            repoImageMap={repoImageMap}
+            errorMessage={repoImageError}
+            onPickImages={handlePickRepoImages}
+            onClearImages={handleClearRepoImages}
+            onPickImagesSequentially={handlePickImagesSequentially}
+          />
+
+
+          {showLogs && (logs.length > 0 || loading || analyzing || fetchingReadmes) && (
             <div className="log-section">
               <div className="log-tabs">
                 <button
@@ -479,7 +637,7 @@ function App() {
                   className={`log-tab ${activeLogTab === 'analyze' ? 'active' : ''}`}
                   onClick={() => setActiveLogTab('analyze')}
                 >
-                  AI分析日志 {analyzeLogs.length > 0 && `(${analyzeLogs.length})`}
+                  AI 分析日志 {analyzeLogs.length > 0 && `(${analyzeLogs.length})`}
                 </button>
                 <button
                   className={`log-tab ${activeLogTab === 'auth' ? 'active' : ''}`}
@@ -518,3 +676,5 @@ function App() {
 }
 
 export default App;
+
+

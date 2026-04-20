@@ -3,7 +3,14 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
   fetchRepos: (config) => ipcRenderer.invoke('fetch-repos', config),
   analyzeRepos: (data) => ipcRenderer.invoke('analyze-repos', data),
+  fetchSelectedReadmes: (payload) => ipcRenderer.invoke('fetch-selected-readmes', payload),
+  selectRepoImages: (payload) => ipcRenderer.invoke('select-repo-images', payload),
   testConnection: (config) => ipcRenderer.invoke('test-connection', config),
+  loadPresentationConfig: () => ipcRenderer.invoke('load-presentation-config'),
+  savePresentationConfig: (config) => ipcRenderer.invoke('save-presentation-config', config),
+  testPresentationTts: (config) => ipcRenderer.invoke('test-presentation-tts', config),
+  selectPresentationManifest: () => ipcRenderer.invoke('select-presentation-manifest'),
+  preparePresentationSession: (payload) => ipcRenderer.invoke('prepare-presentation-session', payload),
 
   getAuthStatus: () => ipcRenderer.invoke('get-auth-status'),
   startGitHubLogin: () => ipcRenderer.invoke('start-github-login'),
@@ -16,6 +23,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   onLogEntry: (callback) => {
     ipcRenderer.on('log-entry', (_, entry) => callback(entry));
+  },
+  onPresentationProgress: (callback) => {
+    const handler = (_, progress) => callback(progress);
+    ipcRenderer.on('presentation-progress', handler);
+    return () => ipcRenderer.removeListener('presentation-progress', handler);
   },
 
   // Window controls

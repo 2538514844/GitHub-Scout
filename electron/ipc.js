@@ -3,12 +3,17 @@ const path = require('path');
 const fs = require('fs');
 const { EventEmitter } = require('events');
 const { StringDecoder } = require('string_decoder');
+const { synthesizeTtsToCache, loadPresentationConfig } = require('./presentation');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const AUTH_FILE = path.join(DATA_DIR, 'auth.json');
+const PROMPT_FILE = path.join(__dirname, '..', 'prompts', 'final_prompt.txt');
+const README_CAROUSEL_RUNS_DIR = path.join(DATA_DIR, 'readme-carousel-runs');
+const README_PIPELINE_CONCURRENCY = 3;
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+if (!fs.existsSync(README_CAROUSEL_RUNS_DIR)) fs.mkdirSync(README_CAROUSEL_RUNS_DIR, { recursive: true });
 
 const logEmitter = new EventEmitter();
 
@@ -106,6 +111,907 @@ function httpsGet(url, headers = {}) {
       }
     }).on('error', reject);
   });
+}
+
+function buildGitHubHeaders(token, extraHeaders = {}) {
+  const headers = {
+    'Accept': 'application/vnd.github+json',
+    'User-Agent': 'github-scout-app',
+    ...extraHeaders,
+  };
+
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  return headers;
+}
+
+function parseJsonSafely(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function decodeBase64Content(content = '') {
+  return Buffer.from(content.replace(/\n/g, ''), 'base64').toString('utf8');
+}
+
+function sanitizeAiContent(value) {
+  return String(value || '').replace(/[\u200B-\u200D\uFEFF\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+}
+
+async function callAiChat(aiConfig, messages, options = {}) {
+  const { baseUrl, apiKey, model } = aiConfig || {};
+  if (!baseUrl || !apiKey) {
+    return { ok: false, message: 'AI 配置不完整' };
+  }
+
+  const provider = getProvider(baseUrl);
+  const cleanBase = baseUrl.replace(/\/+$/, '');
+  const cleanMessages = messages.map((message) => ({
+    ...message,
+    content: sanitizeAiContent(message.content),
+  }));
+  const timeout = options.timeout || 300000;
+  const maxTokens = options.maxTokens || 4096;
+  const temperature = options.temperature ?? 0.7;
+
+  if (provider === 'anthropic') {
+    const url = `${cleanBase}/v1/messages`;
+    const body = JSON.stringify({
+      model: model || 'claude-sonnet-4-20250514',
+      system: cleanMessages.find((message) => message.role === 'system')?.content || '',
+      max_tokens: maxTokens,
+      messages: cleanMessages.filter((message) => message.role !== 'system'),
+      temperature,
+    });
+    const res = await httpsRequest(url, {
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      timeout,
+    }, body);
+    const parsed = JSON.parse(res.data);
+    if (res.statusCode === 200) {
+      const raw = parsed.content?.[0]?.text || 'No response';
+      return { ok: true, content: sanitizeAiContent(raw), model: parsed.model || model };
+    }
+    return { ok: false, message: parsed.error?.message || `HTTP ${res.statusCode}` };
+  }
+
+  const url = `${cleanBase}/v1/chat/completions`;
+  const body = JSON.stringify({
+    model: model || 'gpt-3.5-turbo',
+    messages: cleanMessages,
+    max_tokens: maxTokens,
+    temperature,
+  });
+  const res = await httpsRequest(url, {
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    timeout,
+  }, body);
+  const parsed = JSON.parse(res.data);
+  if (res.statusCode === 200) {
+    const raw = parsed.choices?.[0]?.message?.content || 'No response';
+    return { ok: true, content: sanitizeAiContent(raw), model: parsed.model || model };
+  }
+  return { ok: false, message: parsed.error?.message || `HTTP ${res.statusCode}` };
+}
+
+function ensureDir(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+}
+
+function loadReadmeHtmlPrompt() {
+  if (!fs.existsSync(PROMPT_FILE)) {
+    throw new Error(`提示词文件不存在: ${PROMPT_FILE}`);
+  }
+
+  const promptText = fs.readFileSync(PROMPT_FILE, 'utf8').trim();
+  if (!promptText) {
+    throw new Error(`提示词文件为空: ${PROMPT_FILE}`);
+  }
+
+  return `${promptText}
+
+### 输出包裹规则（强制）
+* 最终完整 HTML 必须放在一个三单引号代码块中。
+* 优先使用以下格式：
+'''html
+<!DOCTYPE html>
+...
+'''
+* 代码块外不要输出与 HTML 无关的大段说明。
+* 程序只会提取三单引号代码块内部内容。`;
+}
+
+function extractHtmlFromAiResponse(content) {
+  const text = String(content || '');
+  const htmlBlockPattern = /'''[ \t]*html[^\n\r]*\r?\n([\s\S]*?)'''/ig;
+  const genericBlockPattern = /'''(?:[ \t]*[^\n\r]*)?\r?\n([\s\S]*?)'''/g;
+
+  let htmlMatch = null;
+  while ((htmlMatch = htmlBlockPattern.exec(text)) !== null) {
+    const extracted = String(htmlMatch[1] || '').trim();
+    if (extracted) return extracted;
+  }
+
+  let genericMatch = null;
+  while ((genericMatch = genericBlockPattern.exec(text)) !== null) {
+    const extracted = String(genericMatch[1] || '').trim();
+    if (extracted) return extracted;
+  }
+
+  return '';
+}
+
+function sanitizeRepoFileName(repoName, index) {
+  const safeRepo = String(repoName || `repo-${index + 1}`)
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .replace(/\s+/g, '-')
+    .replace(/_+/g, '_')
+    .replace(/-+/g, '-')
+    .replace(/^[_.-]+|[_.-]+$/g, '');
+  return `${String(index + 1).padStart(2, '0')}-${safeRepo || `repo-${index + 1}`}`;
+}
+
+function copyRepoImagesToOutput(selectedImagePaths, repoDirPath) {
+  const normalizedPaths = Array.isArray(selectedImagePaths)
+    ? selectedImagePaths
+      .filter((filePath) => typeof filePath === 'string' && filePath.trim())
+      .map((filePath) => path.resolve(filePath))
+    : [];
+
+  if (normalizedPaths.length === 0) {
+    return {
+      imageCount: 0,
+      imageDirPath: '',
+      indexJsonPath: '',
+      images: [],
+      skippedPaths: [],
+    };
+  }
+
+  const imageDirPath = path.join(repoDirPath, 'image');
+  ensureDir(imageDirPath);
+
+  const images = [];
+  const skippedPaths = [];
+
+  normalizedPaths.forEach((sourcePath, index) => {
+    try {
+      if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) {
+        skippedPaths.push(sourcePath);
+        return;
+      }
+
+      const extension = path.extname(sourcePath).toLowerCase() || '.png';
+      const safeExtension = extension.length <= 10 ? extension : '.png';
+      const targetFileName = `${index + 1}${safeExtension}`;
+      const targetPath = path.join(imageDirPath, targetFileName);
+      fs.copyFileSync(sourcePath, targetPath);
+      images.push(`./image/${targetFileName}`);
+    } catch {
+      skippedPaths.push(sourcePath);
+    }
+  });
+
+  if (images.length === 0) {
+    return {
+      imageCount: 0,
+      imageDirPath,
+      indexJsonPath: '',
+      images: [],
+      skippedPaths,
+    };
+  }
+
+  const indexJsonPath = path.join(imageDirPath, 'index.json');
+  fs.writeFileSync(indexJsonPath, JSON.stringify({ images }, null, 2), 'utf8');
+
+  return {
+    imageCount: images.length,
+    imageDirPath,
+    indexJsonPath,
+    images,
+    skippedPaths,
+  };
+}
+
+function stringifyInlineJson(value) {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+function buildLocalImageManifestBridge(images) {
+  const manifest = {
+    images: Array.isArray(images) ? images.filter((item) => typeof item === 'string' && item.trim()) : [],
+  };
+  const manifestJson = stringifyInlineJson(manifest);
+
+  return `
+<script id="local-image-manifest" type="application/json">${manifestJson}</script>
+<script>
+(function () {
+  const embeddedManifest = ${manifestJson};
+  window.__LOCAL_IMAGE_MANIFEST__ = embeddedManifest;
+
+  if (typeof window.fetch !== 'function') {
+    return;
+  }
+
+  const originalFetch = window.fetch.bind(window);
+
+  window.fetch = function patchedFetch(resource, init) {
+    const requestUrl = typeof resource === 'string'
+      ? resource
+      : (resource && typeof resource.url === 'string' ? resource.url : '');
+    const normalizedUrl = String(requestUrl || '').trim();
+    const isLocalImageIndex =
+      normalizedUrl === './image/index.json' ||
+      normalizedUrl === 'image/index.json' ||
+      /(?:^|[\\\\/])image[\\\\/]index\\.json(?:$|[?#])/i.test(normalizedUrl);
+
+    if (!isLocalImageIndex) {
+      return originalFetch(resource, init);
+    }
+
+    if (typeof Response === 'function') {
+      return Promise.resolve(new Response(JSON.stringify(embeddedManifest), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    }
+
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: async function json() { return embeddedManifest; },
+      text: async function text() { return JSON.stringify(embeddedManifest); },
+    });
+  };
+})();
+</script>`;
+}
+
+function buildInjectedLocalImageRuntime(images) {
+  const imageListJson = stringifyInlineJson(
+    Array.isArray(images) ? images.filter((item) => typeof item === 'string' && item.trim()) : [],
+  );
+
+  return `
+<style id="repo-local-image-runtime-style">
+  #repo-local-image-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483647;
+    pointer-events: none;
+    opacity: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #repo-local-image-overlay.is-open {
+    opacity: 1;
+  }
+
+  #repo-local-image-view {
+    width: 720px;
+    max-width: calc(100vw - 240px);
+    max-height: calc(100vh - 240px);
+    object-fit: contain;
+    object-position: center;
+    display: block;
+    border: none;
+    outline: none;
+    box-shadow: none;
+    border-radius: 0;
+    background: transparent;
+    opacity: 0;
+    transform: translateY(16px);
+    transition: opacity 520ms cubic-bezier(0.22, 1, 0.36, 1), transform 520ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  #repo-local-image-overlay.is-open #repo-local-image-view,
+  #repo-local-image-overlay.is-switching-in #repo-local-image-view {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  #repo-local-image-overlay.is-switching-out #repo-local-image-view {
+    opacity: 0;
+    transform: translateY(-12px);
+    transition: opacity 360ms cubic-bezier(0.22, 1, 0.36, 1), transform 360ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  #local-image-modal {
+    display: none !important;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    #repo-local-image-view,
+    #repo-local-image-overlay.is-switching-out #repo-local-image-view,
+    #repo-local-image-overlay.is-switching-in #repo-local-image-view {
+      opacity: 1 !important;
+      transform: none !important;
+      transition: none !important;
+    }
+  }
+</style>
+<div id="repo-local-image-overlay" aria-hidden="true">
+  <img id="repo-local-image-view" alt="Selected Repository Image" />
+</div>
+<script id="repo-local-image-runtime-script">
+(function () {
+  const images = ${imageListJson};
+  if (!Array.isArray(images) || images.length === 0) {
+    return;
+  }
+
+  const overlay = document.getElementById('repo-local-image-overlay');
+  const imageView = document.getElementById('repo-local-image-view');
+  if (!overlay || !imageView) {
+    return;
+  }
+
+  const prefersReducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const OUT_MS = 360;
+  const IN_MS = 520;
+  const HOLD_MS = 2400;
+  const START_DELAY_MS = 1600;
+  let currentIndex = -1;
+  let sequenceFinished = false;
+  let imageTimer = null;
+
+  function clearTimer() {
+    if (imageTimer) {
+      clearTimeout(imageTimer);
+      imageTimer = null;
+    }
+  }
+
+  function applyImageSource(src) {
+    imageView.src = src;
+  }
+
+  function finishSequence() {
+    if (sequenceFinished) {
+      return;
+    }
+
+    clearTimer();
+
+    if (prefersReducedMotion) {
+      overlay.classList.remove('is-open');
+      overlay.classList.remove('is-switching-in');
+      overlay.classList.remove('is-switching-out');
+      imageView.removeAttribute('src');
+      sequenceFinished = true;
+      return;
+    }
+
+    overlay.classList.remove('is-switching-in');
+    overlay.classList.add('is-switching-out');
+
+    setTimeout(() => {
+      overlay.classList.remove('is-open');
+      overlay.classList.remove('is-switching-out');
+      imageView.removeAttribute('src');
+      sequenceFinished = true;
+    }, OUT_MS);
+  }
+
+  function scheduleNextSwitch() {
+    if (sequenceFinished) {
+      return;
+    }
+
+    clearTimer();
+    imageTimer = setTimeout(() => {
+      if (currentIndex >= images.length - 1) {
+        finishSequence();
+        return;
+      }
+      switchToNextImage();
+    }, HOLD_MS);
+  }
+
+  function switchToNextImage() {
+    if (sequenceFinished) {
+      return;
+    }
+
+    const nextIndex = currentIndex + 1;
+    if (nextIndex >= images.length) {
+      finishSequence();
+      return;
+    }
+
+    if (prefersReducedMotion) {
+      applyImageSource(images[nextIndex]);
+      currentIndex = nextIndex;
+      scheduleNextSwitch();
+      return;
+    }
+
+    overlay.classList.remove('is-switching-in');
+    overlay.classList.add('is-switching-out');
+
+    setTimeout(() => {
+      applyImageSource(images[nextIndex]);
+      currentIndex = nextIndex;
+      overlay.classList.remove('is-switching-out');
+      overlay.classList.add('is-open');
+      overlay.classList.add('is-switching-in');
+
+      setTimeout(() => {
+        overlay.classList.remove('is-switching-in');
+        scheduleNextSwitch();
+      }, IN_MS);
+    }, OUT_MS);
+  }
+
+  function showInitialImage() {
+    if (sequenceFinished) {
+      return;
+    }
+
+    applyImageSource(images[0]);
+    currentIndex = 0;
+    overlay.classList.add('is-open');
+    overlay.classList.remove('is-switching-out');
+    overlay.classList.add('is-switching-in');
+
+    if (prefersReducedMotion) {
+      overlay.classList.remove('is-switching-in');
+      scheduleNextSwitch();
+      return;
+    }
+
+    setTimeout(() => {
+      overlay.classList.remove('is-switching-in');
+      scheduleNextSwitch();
+    }, IN_MS);
+  }
+
+  function startSequence() {
+    setTimeout(() => {
+      showInitialImage();
+    }, START_DELAY_MS);
+  }
+
+  if (document.fonts && document.fonts.ready) {
+    Promise.race([
+      document.fonts.ready,
+      new Promise((resolve) => setTimeout(resolve, 1500)),
+    ]).then(() => {
+      requestAnimationFrame(() => {
+        setTimeout(startSequence, 50);
+      });
+    }).catch(() => {
+      startSequence();
+    });
+  } else {
+    startSequence();
+  }
+})();
+</script>`;
+}
+
+function injectLocalImageManifestIntoHtml(htmlContent, images) {
+  const html = String(htmlContent || '').trim();
+  const normalizedImages = Array.isArray(images)
+    ? images.filter((item) => typeof item === 'string' && item.trim())
+    : [];
+
+  if (!html || normalizedImages.length === 0) {
+    return html;
+  }
+
+  if (/<script[^>]+id=["']repo-local-image-runtime-script["']/i.test(html)) {
+    return html;
+  }
+
+  const injection = `${buildLocalImageManifestBridge(normalizedImages)}\n${buildInjectedLocalImageRuntime(normalizedImages)}`;
+
+  if (/<\/body>/i.test(html)) {
+    return html.replace(/<\/body>/i, `${injection}\n</body>`);
+  }
+
+  return `${html}\n${injection}`;
+}
+
+async function mapWithConcurrency(items, limit, worker) {
+  const list = Array.isArray(items) ? items : [];
+  if (list.length === 0) {
+    return [];
+  }
+
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 1, list.length));
+  const results = new Array(list.length);
+  let nextIndex = 0;
+
+  async function runWorker() {
+    while (true) {
+      const currentIndex = nextIndex;
+      if (currentIndex >= list.length) {
+        return;
+      }
+      nextIndex += 1;
+      results[currentIndex] = await worker(list[currentIndex], currentIndex);
+    }
+  }
+
+  await Promise.all(Array.from({ length: safeLimit }, () => runWorker()));
+  return results;
+}
+
+function buildReadmeNarrationPrompt(repo, htmlContent) {
+  return `你是一位专业的中文讲解文案助手。请基于以下 GitHub 仓库信息与最终展示 HTML，生成一段用于 TTS 配音的中文解说词。
+
+要求：
+1. 只输出解说词正文，不要标题、项目符号、引号、括号说明、Markdown、代码块。
+2. 使用自然、流畅、口语化的中文，适合直接朗读。
+3. 长度控制在 80 到 180 字之间。
+4. 聚焦仓库的定位、亮点、技术特征和使用价值。
+5. 不要提及“HTML”“卡片”“README”“代码块”“页面将展示”等生成过程描述。
+
+仓库名：${repo.name}
+仓库链接：${repo.url || `https://github.com/${repo.name}`}
+
+最终 HTML：
+${htmlContent}`;
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function buildCarouselIndexHtml(items) {
+  const payload = JSON.stringify(items.map((item) => ({
+    title: item.title,
+    repoName: item.repoName,
+    repoUrl: item.repoUrl,
+    htmlEntryPath: item.htmlEntryPath || item.htmlFileName,
+    audioEntryPath: item.audioEntryPath || item.audioFileName,
+    audioDurationMs: item.audioDurationMs || null,
+  })));
+
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>README HTML Carousel</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #000;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #start-button {
+      appearance: none;
+      border: 0;
+      padding: 14px 28px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.92);
+      color: #111;
+      font-size: 18px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity 180ms ease, transform 180ms ease;
+    }
+    #start-button:hover {
+      opacity: 0.92;
+      transform: translateY(-1px);
+    }
+    iframe {
+      width: 100%;
+      height: 100%;
+      display: block;
+      border: 0;
+      background: #fff;
+      visibility: hidden;
+    }
+    audio {
+      position: fixed;
+      width: 0;
+      height: 0;
+      opacity: 0;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <button id="start-button" type="button">开始播放</button>
+  <iframe id="frame" title="README HTML Preview"></iframe>
+  <audio id="audio" preload="auto"></audio>
+  <script>
+    const items = ${payload};
+    const frame = document.getElementById('frame');
+    const audio = document.getElementById('audio');
+    const startButton = document.getElementById('start-button');
+
+    let currentIndex = 0;
+    let frameLoadToken = 0;
+    let fallbackTimer = null;
+    let started = false;
+
+    function clearFallbackTimer() {
+      if (fallbackTimer) {
+        clearTimeout(fallbackTimer);
+        fallbackTimer = null;
+      }
+    }
+
+    function getFallbackDelay(item) {
+      const duration = Number(item.audioDurationMs);
+      if (Number.isFinite(duration) && duration > 0) {
+        return duration + 240;
+      }
+      return 3200;
+    }
+
+    function stopAudio() {
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
+    }
+
+    function advanceToNext() {
+      clearFallbackTimer();
+      stopAudio();
+      if (currentIndex >= items.length - 1) {
+        return;
+      }
+      currentIndex += 1;
+      bindCurrentItem();
+    }
+
+    function scheduleFallbackAdvance(item) {
+      clearFallbackTimer();
+      fallbackTimer = setTimeout(() => {
+        advanceToNext();
+      }, getFallbackDelay(item));
+    }
+
+    async function playCurrentAudio(item, token) {
+      try {
+        await audio.play();
+      } catch (error) {
+        if (token === frameLoadToken) {
+          scheduleFallbackAdvance(item);
+        }
+      }
+    }
+
+    function bindCurrentItem() {
+      clearFallbackTimer();
+      if (!started) return;
+      const item = items[currentIndex];
+      const token = ++frameLoadToken;
+
+      frame.onload = () => {
+        if (token !== frameLoadToken) return;
+        frame.style.visibility = 'visible';
+        stopAudio();
+        audio.src = item.audioEntryPath;
+        audio.load();
+        scheduleFallbackAdvance(item);
+        playCurrentAudio(item, token);
+      };
+
+      frame.src = item.htmlEntryPath;
+    }
+
+    audio.addEventListener('ended', () => {
+      advanceToNext();
+    });
+
+    audio.addEventListener('error', () => {
+      const item = items[currentIndex];
+      if (item) {
+        scheduleFallbackAdvance(item);
+      }
+    });
+
+    startButton.addEventListener('click', () => {
+      if (started || items.length === 0) return;
+      started = true;
+      startButton.remove();
+      bindCurrentItem();
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function buildReadmeResultSummary({
+  successItems,
+  failures,
+  outputDir,
+  entryHtmlPath,
+  aiModel,
+  ttsFormat,
+}) {
+  const lines = [
+    '## 处理摘要',
+    '',
+    `- 成功生成: ${successItems.length} 个仓库`,
+    `- 失败数量: ${failures.length} 个仓库`,
+    `- AI 模型: ${aiModel || '未知'}`,
+    `- TTS 格式: ${ttsFormat || '未知'}`,
+    `- 输出目录: ${outputDir}`,
+    `- 浏览器入口: ${entryHtmlPath}`,
+    '',
+  ];
+
+  if (successItems.length > 0) {
+    lines.push('## 已生成仓库');
+    successItems.forEach((item) => {
+      const imageSuffix = item.imageCount > 0 ? `（图片 ${item.imageCount} 张）` : '';
+      lines.push(`- ${item.repoName}${imageSuffix}`);
+    });
+    lines.push('');
+  }
+
+  if (failures.length > 0) {
+    lines.push('## 失败列表');
+    failures.forEach((failure) => {
+      lines.push(`- ${failure.repoName}: ${failure.reason}`);
+    });
+  }
+
+  return lines.join('\n');
+}
+
+/*
+function trimReadmeContent(content, maxChars = 20000) {
+  const normalized = String(content || '').replace(/\r\n/g, '\n').trim();
+  if (normalized.length <= maxChars) {
+    return { content: normalized, truncated: false };
+  }
+
+  return {
+    content: `${normalized.slice(0, maxChars)}\n\n[内容过长，已截断展示]`,
+    truncated: true,
+  };
+}
+
+async function fetchRepoReadme(repoName, token) {
+  const [owner, repo] = String(repoName || '').split('/');
+  if (!owner || !repo) {
+    return { ok: false, message: '仓库名格式无效' };
+  }
+
+  const endpoint = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/readme`;
+  const res = await httpsGet(endpoint, buildGitHubHeaders(token));
+
+  if (res.statusCode !== 200) {
+    const parsed = parseJsonSafely(res.data);
+    return {
+      ok: false,
+      message: parsed?.message || `HTTP ${res.statusCode}`,
+    };
+  }
+
+  const parsed = parseJsonSafely(res.data);
+  if (!parsed) {
+    return { ok: false, message: 'README 响应解析失败' };
+  }
+
+  let content = '';
+  if (parsed.content && parsed.encoding === 'base64') {
+    content = decodeBase64Content(parsed.content);
+  } else if (parsed.download_url) {
+    const rawRes = await httpsGet(parsed.download_url, { 'User-Agent': 'github-scout-app' });
+    if (rawRes.statusCode !== 200) {
+      return { ok: false, message: `README 下载失败 (HTTP ${rawRes.statusCode})` };
+    }
+    content = rawRes.data;
+  }
+
+  if (!String(content || '').trim()) {
+    return { ok: false, message: 'README 为空' };
+  }
+
+  const trimmed = trimReadmeContent(content);
+  return {
+    ok: true,
+    content: trimmed.content,
+    truncated: trimmed.truncated,
+    path: parsed.path || 'README.md',
+    htmlUrl: parsed.html_url || '',
+  };
+}
+
+*/
+
+function trimReadmeContent(content, maxChars = 20000) {
+  const normalized = String(content || '').replace(/\r\n/g, '\n').trim();
+  if (normalized.length <= maxChars) {
+    return { content: normalized, truncated: false };
+  }
+
+  return {
+    content: `${normalized.slice(0, maxChars)}\n\n[Content truncated for display]`,
+    truncated: true,
+  };
+}
+
+async function fetchRepoReadme(repoName, token) {
+  const [owner, repo] = String(repoName || '').split('/');
+  if (!owner || !repo) {
+    return { ok: false, message: 'Invalid repository name' };
+  }
+
+  const endpoint = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/readme`;
+  const res = await httpsGet(endpoint, buildGitHubHeaders(token));
+
+  if (res.statusCode !== 200) {
+    const parsed = parseJsonSafely(res.data);
+    return {
+      ok: false,
+      message: parsed?.message || `HTTP ${res.statusCode}`,
+    };
+  }
+
+  const parsed = parseJsonSafely(res.data);
+  if (!parsed) {
+    return { ok: false, message: 'Failed to parse README response' };
+  }
+
+  let content = '';
+  if (parsed.content && parsed.encoding === 'base64') {
+    content = decodeBase64Content(parsed.content);
+  } else if (parsed.download_url) {
+    const rawRes = await httpsGet(parsed.download_url, { 'User-Agent': 'github-scout-app' });
+    if (rawRes.statusCode !== 200) {
+      return { ok: false, message: `README download failed (HTTP ${rawRes.statusCode})` };
+    }
+    content = rawRes.data;
+  }
+
+  if (!String(content || '').trim()) {
+    return { ok: false, message: 'README is empty' };
+  }
+
+  const trimmed = trimReadmeContent(content);
+  return {
+    ok: true,
+    content: trimmed.content,
+    truncated: trimmed.truncated,
+    path: parsed.path || 'README.md',
+    htmlUrl: parsed.html_url || '',
+  };
 }
 
 // --- GitHub Auth ---
@@ -421,6 +1327,591 @@ async function handleFetchRepos(config = {}, mainWindow) {
   return { repos, total: repos.length };
 }
 
+/*
+async function handleFetchSelectedReadmes(repos = []) {
+  const selectedRepos = Array.isArray(repos)
+    ? repos.filter(repo => repo?.name)
+    : [];
+
+  if (selectedRepos.length === 0) {
+    return {
+      ok: false,
+      title: 'README 输出',
+      errorLabel: '抓取失败',
+      message: '请先勾选至少一个仓库',
+    };
+  }
+
+  const auth = loadAuth();
+  const token = auth?.accessToken;
+  const sections = ['## README 抓取结果', ''];
+  const failures = [];
+  const repoUrlMap = {};
+  let successCount = 0;
+
+  log(`[README] 开始抓取 ${selectedRepos.length} 个仓库的 README...`, 'info');
+
+  for (let i = 0; i < selectedRepos.length; i++) {
+    const repo = selectedRepos[i];
+    const repoUrl = repo.url || `https://github.com/${repo.name}`;
+    repoUrlMap[repo.name] = repoUrl;
+    log(`[README] [${i + 1}/${selectedRepos.length}] ${repo.name}`, 'info');
+
+    try {
+      const result = await fetchRepoReadme(repo.name, token);
+      if (!result.ok) {
+        failures.push(`${repo.name}: ${result.message}`);
+        log(`[README] ${repo.name} 抓取失败: ${result.message}`, 'error');
+        continue;
+      }
+
+      successCount += 1;
+      log(`[README] ${repo.name} 抓取成功${result.truncated ? ' (已截断)' : ''}`, 'success');
+
+      sections.push(`### ${repo.name}`);
+      sections.push(`仓库链接: ${repoUrl}`);
+      sections.push(`README 文件: ${result.path}`);
+      if (result.truncated) {
+        sections.push('提示: 内容较长，当前仅展示前 20000 个字符。');
+      }
+      sections.push('');
+      sections.push(result.content);
+      sections.push('');
+    } catch (e) {
+      failures.push(`${repo.name}: ${e.message}`);
+      log(`[README] ${repo.name} 抓取失败: ${e.message}`, 'error');
+    }
+  }
+
+  if (failures.length > 0) {
+    sections.push('## 抓取失败');
+    failures.forEach(item => sections.push(`- ${item}`));
+  }
+
+  if (successCount === 0) {
+    return {
+      ok: false,
+      title: 'README 输出',
+      errorLabel: '抓取失败',
+      message: failures[0] || '没有抓取到 README 内容',
+      repoUrlMap,
+    };
+  }
+
+  sections.splice(1, 0, `成功抓取 ${successCount} 个仓库的 README。`);
+  if (failures.length > 0) {
+    sections.splice(2, 0, `失败 ${failures.length} 个仓库，详情见下方。`);
+  }
+
+  return {
+    ok: true,
+    title: 'README 输出',
+    model: `README x${successCount}`,
+    content: sections.join('\n'),
+    repoUrlMap,
+  };
+}
+
+*/
+
+function buildReadmeHtmlUserPrompt(repo, repoUrl, readmeResult) {
+  return `请基于以下 GitHub 仓库 README 生成完整 HTML。
+仓库名：${repo.name}
+仓库链接：${repoUrl}
+README 文件：${readmeResult.path}
+
+README 内容：
+${readmeResult.content}`;
+}
+
+async function processSelectedReadmeRepo({
+  repo,
+  index,
+  total,
+  token,
+  aiConfig,
+  htmlPrompt,
+  narrationSystemPrompt,
+  ttsConfig,
+  outputDir,
+  repoImages,
+}) {
+  const repoUrl = repo.url || `https://github.com/${repo.name}`;
+  const repoDirName = sanitizeRepoFileName(repo.name, index);
+  const repoDirPath = path.join(outputDir, repoDirName);
+  const selectedImagePaths = Array.isArray(repoImages?.[repo.name]) ? repoImages[repo.name] : [];
+
+  ensureDir(repoDirPath);
+  log(`[README] [${index + 1}/${total}] 抓取 README: ${repo.name}`, 'info');
+
+  try {
+    const readmeResult = await fetchRepoReadme(repo.name, token);
+    if (!readmeResult.ok) {
+      throw new Error(`README 抓取失败: ${readmeResult.message}`);
+    }
+
+    log(`[README] ${repo.name} README 抓取成功${readmeResult.truncated ? ' (已截断)' : ''}`, 'success');
+    log(`[README] ${repo.name} 开始生成 HTML`, 'info');
+
+    const htmlResult = await callAiChat(aiConfig, [
+      { role: 'system', content: htmlPrompt },
+      {
+        role: 'user',
+        content: buildReadmeHtmlUserPrompt(repo, repoUrl, readmeResult),
+      },
+    ], {
+      timeout: 300000,
+      maxTokens: 8192,
+      temperature: 0.4,
+    });
+
+    if (!htmlResult.ok) {
+      throw new Error(`HTML 生成失败: ${htmlResult.message}`);
+    }
+
+    const extractedHtml = extractHtmlFromAiResponse(htmlResult.content);
+    if (!extractedHtml) {
+      throw new Error('HTML 提取失败: AI 返回内容中未找到有效的三单引号代码块');
+    }
+
+    const imageCopyResult = copyRepoImagesToOutput(selectedImagePaths, repoDirPath);
+    if (imageCopyResult.imageCount > 0) {
+      log(`[README] ${repo.name} 已复制 ${imageCopyResult.imageCount} 张图片`, 'success');
+    }
+    if (imageCopyResult.skippedPaths.length > 0) {
+      log(`[README] ${repo.name} 有 ${imageCopyResult.skippedPaths.length} 张图片复制失败，已跳过`, 'warn');
+    }
+
+    const htmlFileName = 'index.html';
+    const htmlFilePath = path.join(repoDirPath, htmlFileName);
+    const htmlEntryPath = `${repoDirName}/${htmlFileName}`;
+    const finalHtml = injectLocalImageManifestIntoHtml(extractedHtml, imageCopyResult.images);
+    fs.writeFileSync(htmlFilePath, finalHtml.trim(), 'utf8');
+    log(`[README] ${repo.name} HTML 已保存: ${htmlEntryPath}`, 'success');
+
+    log(`[README] ${repo.name} 开始生成解说词`, 'info');
+    const narrationResult = await callAiChat(aiConfig, [
+      { role: 'system', content: narrationSystemPrompt },
+      {
+        role: 'user',
+        content: buildReadmeNarrationPrompt(repo, finalHtml),
+      },
+    ], {
+      timeout: 180000,
+      maxTokens: 800,
+      temperature: 0.5,
+    });
+
+    if (!narrationResult.ok) {
+      throw new Error(`解说词生成失败: ${narrationResult.message}`);
+    }
+
+    const narrationText = sanitizeAiContent(narrationResult.content).replace(/\s+/g, ' ').trim();
+    if (!narrationText) {
+      throw new Error('解说词生成失败: AI 返回内容为空');
+    }
+
+    log(`[README] ${repo.name} 开始生成 MiniMax TTS`, 'info');
+    const audioResult = await synthesizeTtsToCache(narrationText, ttsConfig);
+    const audioExtension = path.extname(audioResult.audioPath) || `.${ttsConfig.format || 'mp3'}`;
+    const audioFileName = `narration${audioExtension}`;
+    const audioFilePath = path.join(repoDirPath, audioFileName);
+    const audioEntryPath = `${repoDirName}/${audioFileName}`;
+    fs.copyFileSync(audioResult.audioPath, audioFilePath);
+    log(`[README] ${repo.name} TTS 已保存: ${audioEntryPath}${audioResult.cached ? ' (复用缓存)' : ''}`, 'success');
+
+    return {
+      ok: true,
+      order: index,
+      repoUrl,
+      aiModel: htmlResult.model || narrationResult.model || aiConfig.model,
+      item: {
+        title: repo.name,
+        repoName: repo.name,
+        repoUrl,
+        repoDirName,
+        repoDirPath,
+        htmlFileName,
+        htmlEntryPath,
+        audioFileName,
+        audioEntryPath,
+        audioDurationMs: audioResult.durationMs || null,
+        imageCount: imageCopyResult.imageCount,
+        narrationText,
+        htmlPath: htmlFilePath,
+        audioPath: audioFilePath,
+        readmePath: readmeResult.path,
+      },
+    };
+  } catch (error) {
+    log(`[README] ${repo.name} 处理失败: ${error.message}`, 'error');
+    return {
+      ok: false,
+      order: index,
+      repoUrl,
+      failure: {
+        repoName: repo.name,
+        reason: error.message,
+      },
+    };
+  }
+}
+
+async function handleFetchSelectedReadmes(payload = {}) {
+  const selectedRepos = Array.isArray(payload?.repos)
+    ? payload.repos.filter((repo) => repo?.name)
+    : Array.isArray(payload)
+      ? payload.filter((repo) => repo?.name)
+      : [];
+  const aiConfig = payload?.aiConfig || null;
+  const repoImages = payload?.repoImages && typeof payload.repoImages === 'object'
+    ? payload.repoImages
+    : {};
+
+  if (selectedRepos.length === 0) {
+    return {
+      ok: false,
+      title: 'README HTML 轮播输出',
+      errorLabel: '生成失败',
+      message: '请先勾选至少一个仓库',
+      failures: [],
+    };
+  }
+
+  if (!aiConfig?.baseUrl || !aiConfig?.apiKey || !aiConfig?.model) {
+    return {
+      ok: false,
+      title: 'README HTML 轮播输出',
+      errorLabel: '生成失败',
+      message: '缺少可用的 AI 配置，请先完成 AI 连接选择',
+      failures: [],
+    };
+  }
+
+  const ttsConfig = loadPresentationConfig().tts;
+  if (!ttsConfig?.apiKey) {
+    return {
+      ok: false,
+      title: 'README HTML 轮播输出',
+      errorLabel: '生成失败',
+      message: '缺少 MiniMax TTS 配置，请先在固定播放器面板中填写并保存 API Key',
+      failures: [],
+    };
+  }
+
+  const htmlPrompt = loadReadmeHtmlPrompt();
+  const narrationSystemPrompt = '你是一位专业的中文讲解文案助手，只输出适合直接朗读的中文解说词正文。';
+  const auth = loadAuth();
+  const token = auth?.accessToken;
+  const pipelineNarrationSystemPrompt = '你是一位专业的中文讲解文案助手，只输出适合直接朗读的中文解说词正文。';
+  const pipelineRunStamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const pipelineOutputDir = path.join(README_CAROUSEL_RUNS_DIR, pipelineRunStamp);
+  const pipelineManifestPath = path.join(pipelineOutputDir, 'manifest.json');
+  const pipelineEntryHtmlPath = path.join(pipelineOutputDir, 'index.html');
+  const pipelineUsedAiModels = new Set();
+
+  ensureDir(pipelineOutputDir);
+  log(`[README] 开始生成 README HTML 轮播，共 ${selectedRepos.length} 个仓库`, 'info');
+
+  const pipelineRepoUrlMap = Object.fromEntries(selectedRepos.map((repo) => [
+    repo.name,
+    repo.url || `https://github.com/${repo.name}`,
+  ]));
+
+  const pipelineResults = await mapWithConcurrency(
+    selectedRepos,
+    Math.min(README_PIPELINE_CONCURRENCY, selectedRepos.length),
+    (repo, index) => processSelectedReadmeRepo({
+      repo,
+      index,
+      total: selectedRepos.length,
+      token,
+      aiConfig,
+      htmlPrompt,
+      narrationSystemPrompt: pipelineNarrationSystemPrompt,
+      ttsConfig,
+      outputDir: pipelineOutputDir,
+      repoImages,
+    }),
+  );
+
+  const pipelineSuccessItems = pipelineResults
+    .filter((result) => result?.ok && result.item)
+    .sort((a, b) => a.order - b.order)
+    .map((result) => {
+      if (result.aiModel) {
+        pipelineUsedAiModels.add(result.aiModel);
+      }
+      return result.item;
+    });
+
+  const pipelineFailures = pipelineResults
+    .filter((result) => result && !result.ok && result.failure)
+    .sort((a, b) => a.order - b.order)
+    .map((result) => result.failure);
+
+  if (pipelineSuccessItems.length === 0) {
+    return {
+      ok: false,
+      title: 'README HTML 轮播输出',
+      errorLabel: '生成失败',
+      message: pipelineFailures[0]?.reason || '没有成功生成任何 HTML 文件',
+      repoUrlMap: pipelineRepoUrlMap,
+      failures: pipelineFailures,
+      successCount: 0,
+      failureCount: pipelineFailures.length,
+      outputDir: pipelineOutputDir,
+      entryHtmlPath: '',
+    };
+  }
+
+  const pipelineAiModelSummary = pipelineUsedAiModels.size > 0
+    ? Array.from(pipelineUsedAiModels).join(', ')
+    : aiConfig.model;
+
+  const pipelineManifest = {
+    generatedAt: new Date().toISOString(),
+    aiModel: pipelineAiModelSummary,
+    ttsModel: ttsConfig.model,
+    ttsFormat: ttsConfig.format,
+    items: pipelineSuccessItems.map((item) => ({
+      title: item.title,
+      repoName: item.repoName,
+      repoUrl: item.repoUrl,
+      repoDirName: item.repoDirName,
+      htmlFileName: item.htmlFileName,
+      htmlEntryPath: item.htmlEntryPath,
+      audioFileName: item.audioFileName,
+      audioEntryPath: item.audioEntryPath,
+      audioDurationMs: item.audioDurationMs || null,
+      imageCount: item.imageCount || 0,
+      readmePath: item.readmePath,
+    })),
+    failures: pipelineFailures,
+  };
+
+  fs.writeFileSync(pipelineManifestPath, JSON.stringify(pipelineManifest, null, 2), 'utf8');
+  fs.writeFileSync(pipelineEntryHtmlPath, buildCarouselIndexHtml(pipelineSuccessItems), 'utf8');
+  log(`[README] 轮播入口已生成: ${pipelineEntryHtmlPath}`, 'success');
+
+  return {
+    ok: true,
+    title: 'README HTML 轮播输出',
+    model: `${pipelineAiModelSummary} / ${ttsConfig.model}`,
+    message: `成功生成 ${pipelineSuccessItems.length} 个 HTML 文件`,
+    content: buildReadmeResultSummary({
+      successItems: pipelineSuccessItems,
+      failures: pipelineFailures,
+      outputDir: pipelineOutputDir,
+      entryHtmlPath: pipelineEntryHtmlPath,
+      aiModel: pipelineAiModelSummary,
+      ttsFormat: ttsConfig.format,
+    }),
+    repoUrlMap: pipelineRepoUrlMap,
+    failures: pipelineFailures,
+    successCount: pipelineSuccessItems.length,
+    failureCount: pipelineFailures.length,
+    outputDir: pipelineOutputDir,
+    entryHtmlPath: pipelineEntryHtmlPath,
+    manifestPath: pipelineManifestPath,
+  };
+  const repoUrlMap = {};
+  const failures = [];
+  const successItems = [];
+  const runStamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const outputDir = path.join(README_CAROUSEL_RUNS_DIR, runStamp);
+  const manifestPath = path.join(outputDir, 'manifest.json');
+  const entryHtmlPath = path.join(outputDir, 'index.html');
+  let lastAiModel = aiConfig.model;
+
+  ensureDir(outputDir);
+  log(`[README] 开始生成 README HTML 轮播，共 ${selectedRepos.length} 个仓库`, 'info');
+
+  for (let index = 0; index < selectedRepos.length; index += 1) {
+    const repo = selectedRepos[index];
+    const repoUrl = repo.url || `https://github.com/${repo.name}`;
+    const safeBaseName = sanitizeRepoFileName(repo.name, index);
+    const repoDirName = safeBaseName;
+    const repoDirPath = path.join(outputDir, repoDirName);
+    const selectedImagePaths = Array.isArray(repoImages[repo.name]) ? repoImages[repo.name] : [];
+    repoUrlMap[repo.name] = repoUrl;
+
+    ensureDir(repoDirPath);
+    log(`[README] [${index + 1}/${selectedRepos.length}] 抓取 README: ${repo.name}`, 'info');
+
+    try {
+      const readmeResult = await fetchRepoReadme(repo.name, token);
+      if (!readmeResult.ok) {
+        throw new Error(`README 抓取失败: ${readmeResult.message}`);
+      }
+
+      log(`[README] ${repo.name} README 抓取成功${readmeResult.truncated ? ' (已截断)' : ''}`, 'success');
+      log(`[README] ${repo.name} 开始生成 HTML`, 'info');
+
+      const htmlResult = await callAiChat(aiConfig, [
+        { role: 'system', content: htmlPrompt },
+        {
+          role: 'user',
+          content: `请基于以下 GitHub 仓库 README 生成完整 HTML。
+
+仓库名：${repo.name}
+仓库链接：${repoUrl}
+README 文件：${readmeResult.path}
+
+README 内容：
+${readmeResult.content}`,
+        },
+      ], {
+        timeout: 300000,
+        maxTokens: 8192,
+        temperature: 0.4,
+      });
+
+      if (!htmlResult.ok) {
+        throw new Error(`HTML 生成失败: ${htmlResult.message}`);
+      }
+
+      lastAiModel = htmlResult.model || lastAiModel;
+      const extractedHtml = extractHtmlFromAiResponse(htmlResult.content);
+      if (!extractedHtml) {
+        throw new Error('HTML 提取失败: AI 返回内容中未找到有效的三单引号代码块');
+      }
+
+      const imageCopyResult = copyRepoImagesToOutput(selectedImagePaths, repoDirPath);
+      if (imageCopyResult.imageCount > 0) {
+        log(`[README] ${repo.name} 已复制 ${imageCopyResult.imageCount} 张图片`, 'success');
+      }
+      if (imageCopyResult.skippedPaths.length > 0) {
+        log(`[README] ${repo.name} 有 ${imageCopyResult.skippedPaths.length} 张图片复制失败，已跳过`, 'warn');
+      }
+
+      const htmlFileName = 'index.html';
+      const htmlFilePath = path.join(repoDirPath, htmlFileName);
+      const htmlEntryPath = `${repoDirName}/${htmlFileName}`;
+      const finalHtml = injectLocalImageManifestIntoHtml(extractedHtml, imageCopyResult.images);
+      fs.writeFileSync(htmlFilePath, finalHtml.trim(), 'utf8');
+      log(`[README] ${repo.name} HTML 已保存: ${htmlEntryPath}`, 'success');
+
+      log(`[README] ${repo.name} 开始生成解说词`, 'info');
+      const narrationResult = await callAiChat(aiConfig, [
+        { role: 'system', content: narrationSystemPrompt },
+        {
+          role: 'user',
+          content: buildReadmeNarrationPrompt(repo, finalHtml),
+        },
+      ], {
+        timeout: 180000,
+        maxTokens: 800,
+        temperature: 0.5,
+      });
+
+      if (!narrationResult.ok) {
+        throw new Error(`解说词生成失败: ${narrationResult.message}`);
+      }
+
+      const narrationText = sanitizeAiContent(narrationResult.content).replace(/\s+/g, ' ').trim();
+      if (!narrationText) {
+        throw new Error('解说词生成失败: AI 返回内容为空');
+      }
+
+      log(`[README] ${repo.name} 开始生成 MiniMax TTS`, 'info');
+      const audioResult = await synthesizeTtsToCache(narrationText, ttsConfig);
+      const audioExtension = path.extname(audioResult.audioPath) || `.${ttsConfig.format || 'mp3'}`;
+      const audioFileName = `narration${audioExtension}`;
+      const audioFilePath = path.join(repoDirPath, audioFileName);
+      const audioEntryPath = `${repoDirName}/${audioFileName}`;
+      fs.copyFileSync(audioResult.audioPath, audioFilePath);
+      log(`[README] ${repo.name} TTS 已保存: ${audioEntryPath}${audioResult.cached ? ' (复用缓存)' : ''}`, 'success');
+
+      successItems.push({
+        title: repo.name,
+        repoName: repo.name,
+        repoUrl,
+        repoDirName,
+        repoDirPath,
+        htmlFileName,
+        htmlEntryPath,
+        audioFileName,
+        audioEntryPath,
+        audioDurationMs: audioResult.durationMs || null,
+        imageCount: imageCopyResult.imageCount,
+        narrationText,
+        htmlPath: htmlFilePath,
+        audioPath: audioFilePath,
+        readmePath: readmeResult.path,
+      });
+    } catch (error) {
+      failures.push({
+        repoName: repo.name,
+        reason: error.message,
+      });
+      log(`[README] ${repo.name} 处理失败: ${error.message}`, 'error');
+    }
+  }
+
+  if (successItems.length === 0) {
+    return {
+      ok: false,
+      title: 'README HTML 轮播输出',
+      errorLabel: '生成失败',
+      message: failures[0]?.reason || '没有成功生成任何 HTML 文件',
+      repoUrlMap,
+      failures,
+      successCount: 0,
+      failureCount: failures.length,
+      outputDir,
+      entryHtmlPath: '',
+    };
+  }
+
+  const manifest = {
+    generatedAt: new Date().toISOString(),
+    aiModel: lastAiModel,
+    ttsModel: ttsConfig.model,
+    ttsFormat: ttsConfig.format,
+    items: successItems.map((item) => ({
+      title: item.title,
+      repoName: item.repoName,
+      repoUrl: item.repoUrl,
+      repoDirName: item.repoDirName,
+      htmlFileName: item.htmlFileName,
+      htmlEntryPath: item.htmlEntryPath,
+      audioFileName: item.audioFileName,
+      audioEntryPath: item.audioEntryPath,
+      audioDurationMs: item.audioDurationMs || null,
+      imageCount: item.imageCount || 0,
+      readmePath: item.readmePath,
+    })),
+    failures,
+  };
+
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+  fs.writeFileSync(entryHtmlPath, buildCarouselIndexHtml(successItems), 'utf8');
+  log(`[README] 轮播入口已生成: ${entryHtmlPath}`, 'success');
+
+  return {
+    ok: true,
+    title: 'README HTML 轮播输出',
+    model: `${lastAiModel || aiConfig.model} / ${ttsConfig.model}`,
+    message: `成功生成 ${successItems.length} 个 HTML 文件`,
+    content: buildReadmeResultSummary({
+      successItems,
+      failures,
+      outputDir,
+      entryHtmlPath,
+      aiModel: lastAiModel || aiConfig.model,
+      ttsFormat: ttsConfig.format,
+    }),
+    repoUrlMap,
+    failures,
+    successCount: successItems.length,
+    failureCount: failures.length,
+    outputDir,
+    entryHtmlPath,
+    manifestPath,
+  };
+}
+
 // --- AI API ---
 
 async function handleTestConnection(aiConfig) {
@@ -487,6 +1978,10 @@ function sanitizeText(value) {
     .trim();
 }
 
+function getRepoSnapshotKey(name, updated = '') {
+  return `${sanitizeText(name)}::${sanitizeText(updated)}`;
+}
+
 function sanitizeTag(tag) {
   return sanitizeText(tag)
     .replace(/[，、；：]/g, '')
@@ -500,18 +1995,19 @@ function sanitizeRepoAnalysisData(data) {
   for (const repo of (data?.repos || [])) {
     const name = sanitizeText(repo.name);
     const url = sanitizeText(repo.url);
+    const updated = sanitizeText(repo.updated);
     if (!name || !url) continue;
 
     const tags = [...new Set((repo.tags || []).map(sanitizeTag).filter(Boolean))];
     const description = sanitizeText(repo.description) || 'GitHub开源项目';
 
-    repoMap.set(name, {
+    repoMap.set(getRepoSnapshotKey(name, updated), {
       ...repo,
       name,
       url,
       tags,
       description,
-      updated: sanitizeText(repo.updated),
+      updated,
     });
   }
 
@@ -621,68 +2117,15 @@ function findSimilarRepos(repos, savedRepos, tagMap) {
 // --- AI Analysis ---
 
 async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
-  const { baseUrl, apiKey, model, systemPrompt } = aiConfig;
-  const provider = getProvider(baseUrl);
-  const cleanBase = baseUrl.replace(/\/+$/, '');
+  const { systemPrompt } = aiConfig;
 
   log('[AI] 准备分析数据...', 'info');
 
-  // Call AI API
-  async function callAI(messages, timeout, maxTokens) {
-    // Strip invisible/control characters from user content before sending
-    const cleanMessages = messages.map(m => ({
-      ...m,
-      content: m.content.replace(/[\u200B-\u200D\uFEFF\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ''),
-    }));
-
-    if (provider === 'anthropic') {
-      const url = `${cleanBase}/v1/messages`;
-      const body = JSON.stringify({
-        model: model || 'claude-sonnet-4-20250514',
-        system: cleanMessages.find(m => m.role === 'system')?.content || '',
-        max_tokens: maxTokens || 4096,
-        messages: cleanMessages.filter(m => m.role !== 'system'),
-        temperature: 0.7,
-      });
-      const res = await httpsRequest(url, {
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        timeout: timeout || 60000,
-      }, body);
-      const parsed = JSON.parse(res.data);
-      if (res.statusCode === 200) {
-        const raw = parsed.content?.[0]?.text || 'No response';
-        const cleaned = raw.replace(/[\u200B-\u200D\uFEFF\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
-        return { ok: true, content: cleaned, model: parsed.model || model };
-      }
-      return { ok: false, message: parsed.error?.message || `HTTP ${res.statusCode}` };
-    } else {
-      const url = `${cleanBase}/v1/chat/completions`;
-      const body = JSON.stringify({
-        model: model || 'gpt-3.5-turbo',
-        messages: cleanMessages,
-        max_tokens: maxTokens || 4096,
-        temperature: 0.7,
-      });
-      const res = await httpsRequest(url, {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        timeout: timeout || 60000,
-      }, body);
-      const parsed = JSON.parse(res.data);
-      if (res.statusCode === 200) {
-        const raw = parsed.choices?.[0]?.message?.content || 'No response';
-        const cleaned = raw.replace(/[\u200B-\u200D\uFEFF\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
-        return { ok: true, content: cleaned, model: parsed.model || model };
-      }
-      return { ok: false, message: parsed.error?.message || `HTTP ${res.statusCode}` };
-    }
-  }
+  const callAI = (messages, timeout, maxTokens) => callAiChat(aiConfig, messages, {
+    timeout,
+    maxTokens,
+    temperature: 0.7,
+  });
 
   // Parse tag analysis response: "name|tag1,tag2|description" per line
   function parseTagAnalysis(content) {
@@ -765,7 +2208,7 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
         callAI([
           { role: 'system', content: tagAnalysisPrompt },
           { role: 'user', content: batchText },
-        ], 60000, 4096).then(result => ({ index: batchStart, result }))
+        ], 300000, 4096).then(result => ({ index: batchStart, result }))
       );
     }
 
@@ -943,7 +2386,7 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
         const descResult = await callAI([
           { role: 'system', content: descSupplementPrompt },
           { role: 'user', content: refEntries.join('\n\n') },
-        ], 60000);
+        ], 300000);
 
         if (descResult.ok) {
           const supplementMap = parseTagAnalysis(descResult.content);
@@ -961,15 +2404,21 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
     // ===== 合并保存 =====
     log('[AI] 正在合并保存数据...', 'info');
 
-    const existingMap = new Map();
-    saved.repos.forEach(r => existingMap.set(r.name, r));
+    const existingSnapshotMap = new Map();
+    const existingReposByName = new Map();
+    saved.repos.forEach(r => {
+      existingSnapshotMap.set(getRepoSnapshotKey(r.name, r.updated), r);
+      const sameNameRepos = existingReposByName.get(r.name) || [];
+      sameNameRepos.push(r);
+      existingReposByName.set(r.name, sameNameRepos);
+    });
 
     // Build existing tag set once for normalization (avoid per-call disk reads)
     const existingTagSet = new Set();
     saved.repos.forEach(r => (r.tags || []).forEach(t => existingTagSet.add(t)));
 
     const today = new Date().toISOString().split('T')[0];
-    const mergedRepos = [];
+    const finalSnapshotMap = new Map(existingSnapshotMap);
 
     for (const repo of repos) {
       const analysis = tagMap[repo.name];
@@ -986,34 +2435,26 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
         }
         return t;
       });
+      const historicalTags = (existingReposByName.get(repo.name) || [])
+        .flatMap(r => r.tags || []);
       const merged = {
         name: repo.name,
         url: repo.url,
-        tags: normalizedTags,
+        tags: [...new Set([...normalizedTags, ...historicalTags])],
         description: analysis.description,
         stars: repo.stars,
         forks: repo.forks,
         updated: today,
       };
 
-      // If existing repo with same name, keep the newer one
-      const existing = existingMap.get(repo.name);
-      if (existing) {
-        existingMap.delete(repo.name); // Remove from existing so we don't double-add
-        // Merge: keep newer data but preserve tags from both
-        const allTags = [...new Set([...merged.tags, ...existing.tags])];
-        merged.tags = allTags;
-        if (repo.created > (existing.updated || '')) {
-          merged.updated = today;
-        }
-      }
-
-      mergedRepos.push(merged);
+      finalSnapshotMap.set(getRepoSnapshotKey(repo.name, today), merged);
+      const nextHistory = (existingReposByName.get(repo.name) || [])
+        .filter(r => r.updated !== today);
+      nextHistory.push(merged);
+      existingReposByName.set(repo.name, nextHistory);
     }
 
-    // Add remaining existing repos (not updated in this batch)
-    existingMap.forEach(r => mergedRepos.push(r));
-
+    const mergedRepos = Array.from(finalSnapshotMap.values());
     const finalData = { repos: mergedRepos };
     saveRepoAnalysis(finalData);
     log(`[AI] 已保存 ${mergedRepos.length} 个仓库的分析数据`, 'success');
@@ -1044,9 +2485,20 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
       `${r.name} | Tags:${r.tags.join(',')} | 语言:${repos.find(rp => rp.name === r.name)?.language || 'N/A'} | Stars:${r.stars} | Forks:${r.forks} | Updated:${r.updated} | Desc:${r.description}`
     ).join('\n');
 
+    const currentRepoNames = new Set(validRepos.map(r => r.name));
+    const currentRepoHistory = mergedRepos
+      .filter(r => currentRepoNames.has(r.name) && r.updated !== today)
+      .sort((a, b) => {
+        if (a.name !== b.name) return a.name.localeCompare(b.name);
+        return b.updated.localeCompare(a.updated);
+      });
+    const currentRepoHistoryText = currentRepoHistory.map(r =>
+      `${r.name} | Tags:${r.tags.join(',')} | 璇█:${repos.find(rp => rp.name === r.name)?.language || 'N/A'} | Stars:${r.stars} | Forks:${r.forks} | Updated:${r.updated} | Desc:${r.description}`
+    ).join('\n');
     const langStats = {};
     repos.forEach(r => { langStats[r.language] = (langStats[r.language] || 0) + 1; });
     const langSummary = Object.entries(langStats).sort((a, b) => b[1] - a[1]).map(([lang, count]) => `${lang}: ${count}`).join(', ');
+    const currentSummaryUserContent = `浠撳簱鎬绘暟: ${validRepos.length}\n璇█鍒嗗竷: ${langSummary}\n鍚屼粨搴撳巻鍙茶褰曟暟: ${currentRepoHistory.length}\n\n璇峰湪鎬荤粨褰撳墠鐑害鐨勫悓鏃讹紝涔熺粨鍚堜笅鏂光€滃悓浠撳簱鍘嗗彶蹇収鈥濈殑淇℃伅锛屾€荤粨褰撳墠鏀堕泦鍒扮殑杩欎簺浠撳簱鐨勫巻鍙叉紨杩涘拰杩炵画鎬с€?\n\n銆愬綋鍓嶆壒娆°€慭n${currentText}\n\n銆愬悓浠撳簱鍘嗗彶蹇収銆慭n${currentRepoHistoryText || '鏃犲悓浠撳簱鍘嗗彶蹇収'}`;
 
     // Build per-repo analysis output
     let fullContent = '## 仓库分析\n\n';
@@ -1070,7 +2522,7 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
       callAI([
         { role: 'system', content: systemPrompt || currentSummaryPrompt },
         { role: 'user', content: `仓库总数: ${validRepos.length}\n语言分布: ${langSummary}\n\n仓库数据:\n${currentText}` },
-      ], 60000).then(result => ({ type: 'current', result }))
+      ], 300000).then(result => ({ type: 'current', result }))
     );
 
     // Call 2: Cross-period trend summary
@@ -1115,7 +2567,7 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
           callAI([
             { role: 'system', content: trendSummaryPrompt },
             { role: 'user', content: trendText },
-          ], 120000).then(result => ({ type: 'trend', result }))
+          ], 300000).then(result => ({ type: 'trend', result }))
         );
       }
     }
@@ -1181,7 +2633,7 @@ function handleLoadAiConfig() {
 }
 
 module.exports = {
-  handleFetchRepos, handleAnalyzeWithAI, handleTestConnection,
+  handleFetchRepos, handleAnalyzeWithAI, handleFetchSelectedReadmes, handleTestConnection,
   loadSettings, saveSettings,
   handleStartGitHubLogin, handlePollGitHubToken, handleLoginWithPat, handleGetAuthStatus, handleLogout,
   handleSaveAiConfig, handleLoadAiConfig,
