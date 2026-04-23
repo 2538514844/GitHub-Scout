@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const { EventEmitter } = require('events');
 const { StringDecoder } = require('string_decoder');
+const { injectLocalImageRuntimeStyle } = require('./local-image-runtime');
 const { synthesizeTtsToCache, loadPresentationConfig } = require('./presentation');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -86,7 +87,7 @@ function httpsRequest(url, options, body) {
     }, async (res) => {
       try {
         const data = await readResponseText(res);
-        resolve({ statusCode: res.statusCode, data });
+        resolve({ statusCode: res.statusCode, data, headers: res.headers || {} });
       } catch (e) {
         reject(e);
       }
@@ -143,6 +144,316 @@ function sanitizeAiContent(value) {
   return String(value || '').replace(/[\u200B-\u200D\uFEFF\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
 }
 
+function flattenAiMessageContent(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part.text === 'string') return part.text;
+        if (part && typeof part.content === 'string') return part.content;
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  return typeof value === 'string' ? value : '';
+}
+
+function extractOpenAiCompatibleMessage(parsed) {
+  const choice = parsed?.choices?.[0] || {};
+  const message = choice?.message || {};
+
+  return {
+    content: sanitizeAiContent(flattenAiMessageContent(message.content)),
+    reasoningContent: sanitizeAiContent(
+      flattenAiMessageContent(message.reasoning_content || message.reasoning || ''),
+    ),
+    finishReason: String(choice?.finish_reason || '').trim(),
+  };
+}
+
+function getEmptyContentFallbackModel(baseUrl, model) {
+  const normalizedBase = String(baseUrl || '').toLowerCase();
+  const normalizedModel = String(model || '').toLowerCase();
+
+  if (normalizedBase.includes('api.deepseek.com') && normalizedModel === 'deepseek-reasoner') {
+    return 'deepseek-chat';
+  }
+
+  return '';
+}
+
+function getStructuredOutputFallbackModel(baseUrl, model) {
+  const originalModel = String(model || '').trim();
+  const normalizedBase = String(baseUrl || '').toLowerCase();
+  const normalizedModel = originalModel.toLowerCase();
+
+  if (!originalModel) {
+    return '';
+  }
+
+  if (normalizedBase.includes('api.deepseek.com') && normalizedModel === 'deepseek-reasoner') {
+    return 'deepseek-chat';
+  }
+
+  if (normalizedModel === 'deepseek-reasoner') {
+    return 'deepseek-chat';
+  }
+
+  if (/deepseek\/deepseek-r1(?::[\w-]+)?$/i.test(originalModel)) {
+    return originalModel.replace(/deepseek-r1/i, 'deepseek-chat');
+  }
+
+  if (/deepseek-r1(?::[\w-]+)?$/i.test(originalModel)) {
+    return originalModel.replace(/deepseek-r1/i, 'deepseek-chat');
+  }
+
+  if (/deepseek.*reasoner/i.test(originalModel)) {
+    return originalModel.replace(/reasoner/ig, 'chat');
+  }
+
+  return '';
+}
+
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeStructuredOutputText(content) {
+  return sanitizeAiContent(String(content || ''))
+    .replace(/\r\n/g, '\n')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '\n')
+    .replace(/<\/?think>/gi, '\n')
+    .replace(/```[^\n\r]*\r?\n/g, '\n')
+    .replace(/```/g, '\n')
+    .replace(/[\uFF5C\uFFE8\u2502\u2223]/g, '|')
+    .replace(/[\uFF0C\u3001\uFE10\uFE11\uFF1B]/g, ',');
+}
+
+function resolveStructuredRepoName(rawName, expectedRepoNames = []) {
+  const candidate = sanitizeText(rawName).replace(/^[`"'“”‘’]+|[`"'“”‘’]+$/g, '');
+  const normalizedExpected = expectedRepoNames.map((name) => sanitizeText(name)).filter(Boolean);
+
+  if (!candidate) {
+    return '';
+  }
+
+  if (normalizedExpected.length === 0) {
+    const inlineMatch = candidate.match(/[\w.-]+\/[\w.-]+/);
+    return inlineMatch ? inlineMatch[0] : (candidate.includes('/') ? candidate : '');
+  }
+
+  const expectedByLower = new Map(normalizedExpected.map((name) => [name.toLowerCase(), name]));
+  const directMatch = expectedByLower.get(candidate.toLowerCase());
+  if (directMatch) {
+    return directMatch;
+  }
+
+  const inlineMatches = candidate.match(/[\w.-]+\/[\w.-]+/g) || [];
+  for (const match of inlineMatches) {
+    const expectedMatch = expectedByLower.get(match.toLowerCase());
+    if (expectedMatch) {
+      return expectedMatch;
+    }
+  }
+
+  const loweredCandidate = candidate.toLowerCase();
+  for (const name of normalizedExpected) {
+    if (loweredCandidate.includes(name.toLowerCase())) {
+      return name;
+    }
+  }
+
+  return '';
+}
+
+function normalizeStructuredTags(tagsValue) {
+  const tagList = Array.isArray(tagsValue)
+    ? tagsValue
+    : String(tagsValue || '').split(/[,\uFF0C\u3001\uFF1B;]+/);
+
+  return [...new Set(
+    tagList
+      .map((tag) => sanitizeTag(String(tag || '').replace(/^\d+[.)-]?\s*/, '')))
+      .filter(Boolean),
+  )];
+}
+
+function normalizeStructuredDescription(descriptionValue) {
+  return sanitizeText(Array.isArray(descriptionValue) ? descriptionValue.join(' ') : descriptionValue)
+    .replace(/^[`"'“”‘’]+|[`"'“”‘’]+$/g, '');
+}
+
+function normalizeStructuredRepoEntry(rawName, rawTags, rawDescription, expectedRepoNames = []) {
+  const name = resolveStructuredRepoName(rawName, expectedRepoNames);
+  const tags = normalizeStructuredTags(rawTags);
+  const description = normalizeStructuredDescription(rawDescription);
+
+  if (!name || tags.length === 0) {
+    return null;
+  }
+
+  return {
+    name,
+    data: {
+      tags,
+      description,
+    },
+  };
+}
+
+function parseStructuredRepoTagMap(content, expectedRepoNames = []) {
+  const tagMap = {};
+  const normalizedText = normalizeStructuredOutputText(content);
+  const lines = normalizedText
+    .split('\n')
+    .map((line) => sanitizeText(line))
+    .filter(Boolean);
+
+  for (const rawLine of lines) {
+    const line = rawLine
+      .replace(/^\s*(?:[-*•+]|(?:\d+|[ivxlcdm]+)[.)])\s*/iu, '')
+      .replace(/\s*\|\s*/g, '|');
+    const parts = line.split('|');
+    if (parts.length < 3) {
+      continue;
+    }
+
+    const entry = normalizeStructuredRepoEntry(
+      parts[0].replace(/^(?:repo|repository)\s*[:\-]?\s*/i, ''),
+      parts[1].replace(/^(?:tags?)\s*[:\-]?\s*/i, ''),
+      parts.slice(2).join('|').replace(/^(?:description|desc)\s*[:\-]?\s*/i, ''),
+      expectedRepoNames,
+    );
+
+    if (entry) {
+      tagMap[entry.name] = entry.data;
+    }
+  }
+
+  if (Object.keys(tagMap).length > 0 || expectedRepoNames.length === 0) {
+    return tagMap;
+  }
+
+  for (const repoName of expectedRepoNames) {
+    const pattern = new RegExp(`${escapeRegex(repoName)}\\s*\\|\\s*([^|\\n]+)\\|\\s*([^\\n]+)`, 'i');
+    const match = normalizedText.match(pattern);
+    if (!match) {
+      continue;
+    }
+
+    const entry = normalizeStructuredRepoEntry(repoName, match[1], match[2], expectedRepoNames);
+    if (entry) {
+      tagMap[entry.name] = entry.data;
+    }
+  }
+
+  return tagMap;
+}
+
+function getStructuredJsonCandidates(content) {
+  const raw = sanitizeAiContent(String(content || ''));
+  const candidates = [];
+  const pushCandidate = (value) => {
+    const normalized = String(value || '').trim();
+    if (normalized && !candidates.includes(normalized)) {
+      candidates.push(normalized);
+    }
+  };
+
+  pushCandidate(raw);
+
+  const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenceMatch?.[1]) {
+    pushCandidate(fenceMatch[1]);
+  }
+
+  const arrayStart = raw.indexOf('[');
+  const arrayEnd = raw.lastIndexOf(']');
+  if (arrayStart !== -1 && arrayEnd > arrayStart) {
+    pushCandidate(raw.slice(arrayStart, arrayEnd + 1));
+  }
+
+  const objectStart = raw.indexOf('{');
+  const objectEnd = raw.lastIndexOf('}');
+  if (objectStart !== -1 && objectEnd > objectStart) {
+    pushCandidate(raw.slice(objectStart, objectEnd + 1));
+  }
+
+  return candidates;
+}
+
+function parseStructuredRepoTagMapFromJson(content, expectedRepoNames = []) {
+  for (const candidate of getStructuredJsonCandidates(content)) {
+    const parsed = parseJsonSafely(candidate);
+    if (!parsed) {
+      continue;
+    }
+
+    let items = [];
+    if (Array.isArray(parsed)) {
+      items = parsed;
+    } else if (Array.isArray(parsed?.items)) {
+      items = parsed.items;
+    } else if (Array.isArray(parsed?.repositories)) {
+      items = parsed.repositories;
+    } else if (parsed && typeof parsed === 'object') {
+      items = Object.entries(parsed).map(([name, value]) => ({
+        name,
+        ...(value && typeof value === 'object' ? value : { description: value }),
+      }));
+    }
+
+    const tagMap = {};
+    for (const item of items) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+
+      const entry = normalizeStructuredRepoEntry(
+        item.name || item.repo || item.repository || item.full_name || item.fullName || '',
+        item.tags || item.labels || item.keywords || [],
+        item.description || item.desc || item.summary || item.reason || '',
+        expectedRepoNames,
+      );
+
+      if (entry) {
+        tagMap[entry.name] = entry.data;
+      }
+    }
+
+    if (Object.keys(tagMap).length > 0) {
+      return tagMap;
+    }
+  }
+
+  return {};
+}
+
+function buildStructuredPreview(content, maxLength = 200) {
+  return normalizeStructuredOutputText(content)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength);
+}
+
+function shouldRetryAiError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return (
+    message.includes('aborted')
+    || message.includes('timeout')
+    || message.includes('econnreset')
+    || message.includes('socket hang up')
+  );
+}
+
+function buildNonJsonAiResponseMessage(statusCode, contentType, responseText) {
+  const preview = sanitizeAiContent(String(responseText || '').replace(/\s+/g, ' ').trim()).slice(0, 180);
+  const contentTypeLabel = contentType ? `, ${contentType}` : '';
+  return `上游返回了非 JSON 响应 (HTTP ${statusCode}${contentTypeLabel})${preview ? `，预览: ${preview}` : ''}`;
+}
+
 async function callAiChat(aiConfig, messages, options = {}) {
   const { baseUrl, apiKey, model } = aiConfig || {};
   if (!baseUrl || !apiKey) {
@@ -171,39 +482,131 @@ async function callAiChat(aiConfig, messages, options = {}) {
     const res = await httpsRequest(url, {
       headers: {
         'Content-Type': 'application/json',
+        Accept: 'application/json',
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
+        'User-Agent': 'github-scout-app',
       },
       timeout,
     }, body);
-    const parsed = JSON.parse(res.data);
+    const parsed = parseJsonSafely(res.data);
+    if (!parsed) {
+      return {
+        ok: false,
+        message: buildNonJsonAiResponseMessage(res.statusCode, res.headers?.['content-type'], res.data),
+      };
+    }
     if (res.statusCode === 200) {
-      const raw = parsed.content?.[0]?.text || 'No response';
-      return { ok: true, content: sanitizeAiContent(raw), model: parsed.model || model };
+      const raw = sanitizeAiContent(parsed.content?.[0]?.text || '');
+      if (!raw) {
+        return { ok: false, message: `模型 ${model || parsed.model || 'unknown'} 返回空正文` };
+      }
+      return { ok: true, content: raw, model: parsed.model || model };
     }
     return { ok: false, message: parsed.error?.message || `HTTP ${res.statusCode}` };
   }
 
   const url = `${cleanBase}/v1/chat/completions`;
-  const body = JSON.stringify({
-    model: model || 'gpt-3.5-turbo',
-    messages: cleanMessages,
-    max_tokens: maxTokens,
-    temperature,
-  });
-  const res = await httpsRequest(url, {
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    timeout,
-  }, body);
-  const parsed = JSON.parse(res.data);
-  if (res.statusCode === 200) {
-    const raw = parsed.choices?.[0]?.message?.content || 'No response';
-    return { ok: true, content: sanitizeAiContent(raw), model: parsed.model || model };
+  const requestOpenAiCompatibleChat = async (requestModel) => {
+    const body = JSON.stringify({
+      model: requestModel || 'gpt-3.5-turbo',
+      messages: cleanMessages,
+      max_tokens: maxTokens,
+      temperature,
+    });
+    const requestConfig = {
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        'User-Agent': 'github-scout-app',
+      },
+      timeout,
+    };
+    let res;
+    try {
+      res = await httpsRequest(url, requestConfig, body);
+    } catch (error) {
+      if (!shouldRetryAiError(error)) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      res = await httpsRequest(url, requestConfig, body);
+    }
+    let parsed = parseJsonSafely(res.data);
+    if (!parsed) {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      res = await httpsRequest(url, requestConfig, body);
+      parsed = parseJsonSafely(res.data);
+    }
+
+    if (!parsed) {
+      return {
+        ok: false,
+        message: buildNonJsonAiResponseMessage(res.statusCode, res.headers?.['content-type'], res.data),
+      };
+    }
+
+    if (res.statusCode !== 200) {
+      return {
+        ok: false,
+        message: parsed.error?.message || `HTTP ${res.statusCode}`,
+      };
+    }
+
+    const message = extractOpenAiCompatibleMessage(parsed);
+    return {
+      ok: true,
+      content: message.content,
+      reasoningContent: message.reasoningContent,
+      finishReason: message.finishReason,
+      model: parsed.model || requestModel,
+    };
+  };
+
+  const primaryModel = model || 'gpt-3.5-turbo';
+  const primaryResult = await requestOpenAiCompatibleChat(primaryModel);
+  if (!primaryResult.ok) {
+    return primaryResult;
   }
-  return { ok: false, message: parsed.error?.message || `HTTP ${res.statusCode}` };
+
+  if (primaryResult.content) {
+    return {
+      ok: true,
+      content: primaryResult.content,
+      model: primaryResult.model || primaryModel,
+    };
+  }
+
+  const fallbackModel = getEmptyContentFallbackModel(cleanBase, primaryModel);
+  if (fallbackModel && fallbackModel !== primaryModel) {
+    log(`[AI] 模型 ${primaryModel} 返回空正文，自动回退到 ${fallbackModel}`, 'warn');
+    const fallbackResult = await requestOpenAiCompatibleChat(fallbackModel);
+    if (fallbackResult.ok && fallbackResult.content) {
+      return {
+        ok: true,
+        content: fallbackResult.content,
+        model: fallbackResult.model || fallbackModel,
+      };
+    }
+    if (!fallbackResult.ok) {
+      return fallbackResult;
+    }
+  }
+
+  const finishReasonSuffix = primaryResult.finishReason
+    ? `（finish_reason: ${primaryResult.finishReason}）`
+    : '';
+  if (primaryResult.reasoningContent) {
+    return {
+      ok: false,
+      message: `模型 ${primaryModel} 仅返回推理内容，未返回正文${finishReasonSuffix}`,
+    };
+  }
+  return {
+    ok: false,
+    message: `模型 ${primaryModel} 返回空正文${finishReasonSuffix}`,
+  };
 }
 
 function ensureDir(dirPath) {
@@ -236,20 +639,46 @@ function loadReadmeHtmlPrompt() {
 }
 
 function extractHtmlFromAiResponse(content) {
-  const text = String(content || '');
-  const htmlBlockPattern = /'''[ \t]*html[^\n\r]*\r?\n([\s\S]*?)'''/ig;
-  const genericBlockPattern = /'''(?:[ \t]*[^\n\r]*)?\r?\n([\s\S]*?)'''/g;
-
-  let htmlMatch = null;
-  while ((htmlMatch = htmlBlockPattern.exec(text)) !== null) {
-    const extracted = String(htmlMatch[1] || '').trim();
-    if (extracted) return extracted;
+  const text = sanitizeAiContent(String(content || '')).trim();
+  if (!text) {
+    return '';
   }
 
-  let genericMatch = null;
-  while ((genericMatch = genericBlockPattern.exec(text)) !== null) {
-    const extracted = String(genericMatch[1] || '').trim();
-    if (extracted) return extracted;
+  const blockPatterns = [
+    /'''[ \t]*html[^\n\r]*\r?\n([\s\S]*?)'''/ig,
+    /'''(?:[ \t]*[^\n\r]*)?\r?\n([\s\S]*?)'''/g,
+    /```[ \t]*html[^\n\r]*\r?\n([\s\S]*?)```/ig,
+    /```(?:[ \t]*[^\n\r]*)?\r?\n([\s\S]*?)```/g,
+  ];
+
+  for (const pattern of blockPatterns) {
+    let match = null;
+    while ((match = pattern.exec(text)) !== null) {
+      const extracted = String(match[1] || '').trim();
+      if (/<(?:!DOCTYPE\s+html|html|body)\b/i.test(extracted)) {
+        return extracted;
+      }
+    }
+  }
+
+  const doctypeIndex = text.search(/<!DOCTYPE\s+html/i);
+  if (doctypeIndex !== -1) {
+    const extracted = text.slice(doctypeIndex).trim();
+    if (/<\/html>/i.test(extracted) || /<\/body>/i.test(extracted)) {
+      return extracted;
+    }
+  }
+
+  const htmlIndex = text.search(/<html\b/i);
+  if (htmlIndex !== -1) {
+    const extracted = text.slice(htmlIndex).trim();
+    if (/<\/html>/i.test(extracted)) {
+      return extracted;
+    }
+  }
+
+  if (/<body\b/i.test(text) && /<\/body>/i.test(text)) {
+    return text;
   }
 
   return '';
@@ -427,13 +856,14 @@ function injectLocalImageManifestIntoHtml(htmlContent, images, audioDurationMs =
   }
 
   html = html
-    .replace(/\s*<style[^>]+id=["']repo-local-image-runtime-style["'][\s\S]*?<\/style>/ig, '')
     .replace(/\s*<div[^>]+id=["']repo-local-image-overlay["'][\s\S]*?<\/div>/ig, '')
     .replace(/\s*<script[^>]+id=["']repo-local-image-runtime-script["'][\s\S]*?<\/script>/ig, '');
 
   if (normalizedImages.length === 0) {
     return html;
   }
+
+  html = injectLocalImageRuntimeStyle(html);
 
   if (/<script[^>]+id=["']local-image-manifest["']/i.test(html)) {
     return html;
@@ -479,7 +909,7 @@ function buildReadmeNarrationPrompt(repo, htmlContent) {
 要求：
 1. 只输出解说词正文，不要标题、项目符号、引号、括号说明、Markdown、代码块。
 2. 使用自然、流畅、口语化的中文，适合直接朗读。
-3. 长度控制在 80 到 180 字之间。
+3. 长度控制在 20 到 50 字之间。
 4. 聚焦仓库的定位、亮点、技术特征和使用价值。
 5. 不要提及“HTML”“卡片”“README”“代码块”“页面将展示”等生成过程描述。
 
@@ -497,6 +927,457 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+const GITHUB_BRIEFING_TIME_ZONE = 'Asia/Shanghai';
+const GITHUB_BRIEFING_OUTRO_TEXT = '今天的GitHub早报到此为止，欢迎下次收看';
+
+function getGitHubBriefingDateParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: GITHUB_BRIEFING_TIME_ZONE,
+    month: 'numeric',
+    day: 'numeric',
+    weekday: 'long',
+  }).formatToParts(date);
+
+  const pickValue = (type, fallback) => parts.find((part) => part.type === type)?.value || fallback;
+
+  return {
+    month: pickValue('month', String(date.getMonth() + 1)),
+    day: pickValue('day', String(date.getDate())),
+    weekday: pickValue('weekday', '星期一'),
+  };
+}
+
+function buildGitHubBriefingWelcomeText(date = new Date()) {
+  const { month, day, weekday } = getGitHubBriefingDateParts(date);
+  return `你好，今天是${month}月${day}日${weekday}，欢迎收看GitHub早报。`;
+}
+
+function buildGitHubBriefingDateLabel(date = new Date()) {
+  const { month, day, weekday } = getGitHubBriefingDateParts(date);
+  return `${month} 月 ${day} 日 · ${weekday}`;
+}
+
+function buildBriefingNarrationCardHtml({
+  kicker,
+  title,
+  body,
+  dateLabel,
+}) {
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeHtml(title)}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,300,0,0&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, ::before, ::after { box-sizing: border-box; }
+    html, body { height: 100%; }
+
+    body {
+      margin: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      overflow: hidden;
+      background-color: #fbf9f6;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+
+    .main-container {
+      background-color: #fbf9f6;
+      color: #4a403a;
+    }
+
+    .warm-title {
+      font-weight: 700;
+      color: #c96442;
+      line-height: 1.2;
+      white-space: nowrap;
+      text-shadow: 2px 2px 0 rgba(201, 100, 66, 0.1);
+    }
+
+    .material-symbols-rounded {
+      font-family: 'Material Symbols Rounded' !important;
+      font-weight: 300 !important;
+      font-style: normal;
+      display: inline-block;
+      line-height: 1;
+      text-transform: none;
+      letter-spacing: normal;
+      white-space: nowrap;
+      direction: ltr;
+      font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24 !important;
+    }
+
+    .card-item {
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .card-width-2col { width: calc((100% - var(--container-gap)) / 2 - 1px); }
+    .text-4-5xl { font-size: 2.625rem; line-height: 1.2; }
+    .text-3-25xl { font-size: 2rem; line-height: 1.35; }
+
+    .card-title {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .js-desc strong { font-weight: 700; }
+    .content-scale { transform-origin: center center; }
+
+    .title-zone,
+    .card-item {
+      opacity: 0;
+      transform: translateY(18px);
+    }
+
+    body.motion-ready .title-zone {
+      opacity: 1;
+      transform: translateY(0);
+      transition: opacity 560ms cubic-bezier(0.22, 1, 0.36, 1), transform 560ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    body.motion-ready .card-item {
+      opacity: 1;
+      transform: translateY(0);
+      transition: opacity 620ms cubic-bezier(0.22, 1, 0.36, 1), transform 620ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.2s ease;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .title-zone,
+      .card-item,
+      body.motion-ready .title-zone,
+      body.motion-ready .card-item {
+        opacity: 1 !important;
+        transform: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="main-container w-[1920px] h-[1080px] relative overflow-hidden box-border bg-[#fbf9f6]">
+    <div class="content-wrapper w-full h-full flex flex-col justify-center items-center px-24 box-border content-scale z-10" style="gap: 72px;">
+      <div class="title-zone flex-none flex items-center justify-center w-full">
+        <h1 class="main-title warm-title text-center">${escapeHtml(title)}</h1>
+      </div>
+      <div class="card-zone flex-none w-full">
+        <div id="card-dynamic-container" class="flex flex-wrap justify-center w-full" style="gap: 24px; --container-gap: 24px;">
+          <div class="card-item card-width-2col flex flex-col" style="padding: 8px; background-color: #ffffff; border-radius: 32px; border: 1px solid rgb(218, 216, 212); box-shadow: 0 10px 30px -10px rgba(74, 64, 58, 0.1);">
+            <div class="title-box flex items-center gap-2 mb-0 px-5 pt-5 pb-2">
+              <span class="js-icon material-symbols-rounded" style="font-size: 64px; color: #c96442;">calendar_month</span>
+              <h3 class="card-title font-bold leading-tight text-4-5xl" style="color: #c96442;">${escapeHtml(kicker)}</h3>
+            </div>
+            <div class="card-body flex-1 w-full px-5 pb-5 pt-0" style="min-height: 80px;">
+              <p class="js-desc font-medium leading-relaxed text-3-25xl"><strong>${escapeHtml(dateLabel || '')}</strong></p>
+            </div>
+          </div>
+          <div class="card-item card-width-2col flex flex-col" style="padding: 8px; background-color: #ffffff; border-radius: 32px; border: 1px solid rgb(218, 216, 212); box-shadow: 0 10px 30px -10px rgba(74, 64, 58, 0.1);">
+            <div class="title-box flex items-center gap-2 mb-0 px-5 pt-5 pb-2">
+              <span class="js-icon material-symbols-rounded" style="font-size: 64px; color: #335c67;">campaign</span>
+              <h3 class="card-title font-bold leading-tight text-4-5xl" style="color: #335c67;">欢迎收看</h3>
+            </div>
+            <div class="card-body flex-1 w-full px-5 pb-5 pt-0" style="min-height: 80px;">
+              <p class="js-desc font-medium leading-relaxed text-3-25xl">${escapeHtml(body)}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const wrapper = document.querySelector('.content-wrapper');
+      const titleEl = document.querySelector('.main-title');
+      const container = document.getElementById('card-dynamic-container');
+      const cards = Array.from(container ? container.querySelectorAll('.card-item') : []);
+      let motionStarted = false;
+
+      if (!wrapper || !titleEl || !container) return;
+
+      const fitTitle = () => {
+        let size = 96;
+        titleEl.style.fontSize = size + 'px';
+        let guard = 0;
+        while (titleEl.scrollWidth > 1700 && size > 52 && guard < 100) {
+          size -= 1;
+          titleEl.style.fontSize = size + 'px';
+          guard += 1;
+        }
+      };
+
+      const fitCardTitles = () => {
+        const titleEls = wrapper.querySelectorAll('.card-title');
+        titleEls.forEach((el) => {
+          el.style.fontSize = '';
+          const base = parseFloat(window.getComputedStyle(el).fontSize);
+          if (!base) return;
+          let fontSize = base;
+          const minFontSize = Math.max(26, Math.floor(base * 0.72));
+          let guard = 0;
+          while (el.scrollWidth > el.clientWidth && fontSize > minFontSize && guard < 50) {
+            fontSize -= 1;
+            el.style.fontSize = fontSize + 'px';
+            guard += 1;
+          }
+        });
+      };
+
+      const fitViewport = () => {
+        const maxH = 1040;
+        const contentH = wrapper.scrollHeight;
+        if (contentH > maxH) {
+          const scale = Math.max(0.7, maxH / contentH);
+          wrapper.style.transform = 'scale(' + scale + ')';
+          return;
+        }
+        wrapper.style.transform = '';
+      };
+
+      const runEntranceMotion = () => {
+        if (motionStarted) return;
+        motionStarted = true;
+        cards.forEach((card, idx) => {
+          card.style.transitionDelay = (120 + idx * 80) + 'ms';
+        });
+        document.body.classList.add('motion-ready');
+      };
+
+      fitTitle();
+      fitCardTitles();
+      setTimeout(fitViewport, 50);
+      setTimeout(() => {
+        fitCardTitles();
+        fitViewport();
+      }, 220);
+
+      if (document.fonts?.ready) {
+        Promise.race([
+          document.fonts.ready,
+          new Promise((resolve) => setTimeout(resolve, 1500)),
+        ]).then(() => {
+          requestAnimationFrame(() => {
+            fitCardTitles();
+            setTimeout(() => {
+              fitViewport();
+              runEntranceMotion();
+            }, 50);
+          });
+        }).catch(() => {
+          runEntranceMotion();
+        });
+      } else {
+        runEntranceMotion();
+      }
+
+      window.addEventListener('resize', () => {
+        fitTitle();
+        fitCardTitles();
+        fitViewport();
+      });
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function buildBriefingOutroBridge(closingText, revealDelayMs = 0) {
+  const safeText = escapeHtml(closingText);
+  const safeDelayMs = Number.isFinite(Number(revealDelayMs)) && Number(revealDelayMs) > 0
+    ? Math.round(Number(revealDelayMs))
+    : 0;
+
+  return `
+<style id="repo-briefing-outro-style">
+  .repo-briefing-outro {
+    position: fixed;
+    left: 42px;
+    bottom: 28px;
+    z-index: 12;
+    max-width: min(760px, calc(100vw - 96px));
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 22px;
+    background-color: #ffffff;
+    border: 1px solid rgb(218, 216, 212);
+    border-radius: 32px;
+    box-shadow: 0 10px 30px -10px rgba(74, 64, 58, 0.1);
+    color: #4a403a;
+    opacity: 0;
+    transform: translateY(12px);
+    transition: opacity 420ms cubic-bezier(0.22, 1, 0.36, 1), transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+    pointer-events: none;
+  }
+
+  .repo-briefing-outro.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .repo-briefing-outro-kicker {
+    flex: none;
+    color: #9e2a2b;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+  }
+
+  .repo-briefing-outro-text {
+    color: rgba(74, 64, 58, 0.78);
+    font-size: 20px;
+    line-height: 1.45;
+    font-weight: 600;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .repo-briefing-outro,
+    .repo-briefing-outro.is-visible {
+      transform: none !important;
+      transition: none !important;
+    }
+  }
+</style>
+<div id="repo-briefing-outro-banner" class="repo-briefing-outro" aria-label="播报结束提示">
+  <span class="repo-briefing-outro-kicker">播报结束</span>
+  <span class="repo-briefing-outro-text">${safeText}</span>
+</div>
+<script id="repo-briefing-outro-script">
+  window.__BRIEFING_OUTRO_REVEAL_MS__ = ${safeDelayMs};
+  document.addEventListener('DOMContentLoaded', () => {
+    const banner = document.getElementById('repo-briefing-outro-banner');
+    if (!banner) return;
+    const revealDelayMs = Number(window.__BRIEFING_OUTRO_REVEAL_MS__);
+    const showBanner = () => banner.classList.add('is-visible');
+    if (!Number.isFinite(revealDelayMs) || revealDelayMs <= 0) {
+      showBanner();
+      return;
+    }
+    window.setTimeout(showBanner, revealDelayMs);
+  });
+</script>`;
+}
+
+function injectBriefingOutroIntoHtml(htmlContent, closingText, revealDelayMs = 0) {
+  let html = String(htmlContent || '').trim();
+  if (!html) {
+    return html;
+  }
+
+  html = html
+    .replace(/\s*<style[^>]+id=["']repo-briefing-outro-style["'][\s\S]*?<\/style>/ig, '')
+    .replace(/\s*<div[^>]+id=["']repo-briefing-outro-banner["'][\s\S]*?<\/div>/ig, '')
+    .replace(/\s*<script[^>]+id=["']repo-briefing-outro-script["'][\s\S]*?<\/script>/ig, '');
+  return html;
+}
+
+function mergeNarrationWithOutro(baseText, outroText) {
+  const normalizedBase = String(baseText || '').trim();
+  const normalizedOutro = String(outroText || '').trim();
+
+  if (!normalizedBase) return normalizedOutro;
+  if (!normalizedOutro) return normalizedBase;
+  if (/[.!?\u3002\uFF01\uFF1F]$/u.test(normalizedBase)) {
+    return `${normalizedBase}${normalizedOutro}`;
+  }
+  return `${normalizedBase}\u3002${normalizedOutro}`;
+}
+
+async function mergeBriefingOutroIntoLastItem(items, outroText, ttsConfig) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return null;
+  }
+
+  const lastItem = items[items.length - 1];
+  if (!lastItem?.htmlPath || !lastItem?.repoDirPath || !lastItem?.repoDirName) {
+    return lastItem;
+  }
+
+  const mergedNarrationText = mergeNarrationWithOutro(lastItem.narrationText, outroText);
+  const previousAudioDurationMs = Number(lastItem.audioDurationMs) || 0;
+  const audioResult = await synthesizeTtsToCache(mergedNarrationText, ttsConfig);
+  const audioExtension = path.extname(audioResult.audioPath) || path.extname(lastItem.audioFileName || '') || `.${ttsConfig.format || 'mp3'}`;
+  const audioFileName = path.extname(lastItem.audioFileName || '') === audioExtension
+    ? lastItem.audioFileName
+    : `narration${audioExtension}`;
+  const audioFilePath = path.join(lastItem.repoDirPath, audioFileName);
+  const audioEntryPath = `${lastItem.repoDirName}/${audioFileName}`;
+  const currentHtml = fs.readFileSync(lastItem.htmlPath, 'utf8');
+  const htmlWithOutro = injectBriefingOutroIntoHtml(currentHtml, outroText, previousAudioDurationMs);
+  const finalHtml = injectPageAudioDurationIntoHtml(htmlWithOutro, audioResult.durationMs);
+
+  fs.copyFileSync(audioResult.audioPath, audioFilePath);
+  fs.writeFileSync(lastItem.htmlPath, finalHtml, 'utf8');
+
+  lastItem.audioFileName = audioFileName;
+  lastItem.audioPath = audioFilePath;
+  lastItem.audioEntryPath = audioEntryPath;
+  lastItem.audioDurationMs = audioResult.durationMs || null;
+  lastItem.narrationText = mergedNarrationText;
+
+  return lastItem;
+}
+
+async function createBriefingNarrationCardItem({
+  outputDir,
+  dirName,
+  segmentType,
+  title,
+  ttsText,
+  kicker,
+  body,
+  ttsConfig,
+}) {
+  const repoDirName = dirName;
+  const repoDirPath = path.join(outputDir, repoDirName);
+  const htmlFileName = 'index.html';
+  const htmlFilePath = path.join(repoDirPath, htmlFileName);
+  const htmlEntryPath = `${repoDirName}/${htmlFileName}`;
+
+  ensureDir(repoDirPath);
+
+  const audioResult = await synthesizeTtsToCache(ttsText, ttsConfig);
+  const audioExtension = path.extname(audioResult.audioPath) || `.${ttsConfig.format || 'mp3'}`;
+  const audioFileName = `narration${audioExtension}`;
+  const audioFilePath = path.join(repoDirPath, audioFileName);
+  const audioEntryPath = `${repoDirName}/${audioFileName}`;
+  const cardHtml = buildBriefingNarrationCardHtml({
+    kicker,
+    title,
+    body,
+    dateLabel: buildGitHubBriefingDateLabel(),
+  });
+  const finalHtml = injectPageAudioDurationIntoHtml(cardHtml, audioResult.durationMs);
+
+  fs.writeFileSync(htmlFilePath, finalHtml, 'utf8');
+  fs.copyFileSync(audioResult.audioPath, audioFilePath);
+
+  return {
+    title,
+    repoName: '',
+    repoUrl: '',
+    repoDirName,
+    repoDirPath,
+    htmlFileName,
+    htmlEntryPath,
+    audioFileName,
+    audioEntryPath,
+    audioDurationMs: audioResult.durationMs || null,
+    imageCount: 0,
+    narrationText: ttsText,
+    htmlPath: htmlFilePath,
+    audioPath: audioFilePath,
+    readmePath: '',
+    segmentType,
+  };
 }
 
 function buildCarouselIndexHtml(items) {
@@ -1236,6 +2117,100 @@ README 内容：
 ${readmeResult.content}`;
 }
 
+function buildReadmeHtmlRetryUserPrompt(repo, repoUrl, readmeResult, previousContent = '', previousError = '') {
+  const preview = sanitizeAiContent(String(previousContent || ''))
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 320);
+  const errorMessage = sanitizeText(previousError);
+
+  return `${buildReadmeHtmlUserPrompt(repo, repoUrl, readmeResult)}
+
+上一次返回未通过程序提取，请重新生成一次完整 HTML。
+${errorMessage ? `上一次问题：${errorMessage}` : ''}
+${preview ? `上一次返回预览：${preview}` : ''}
+
+强制要求：
+1. 只输出一个代码块，不要输出解释、说明、前言或结尾。
+2. 优先使用三单引号代码块，格式必须是：
+'''html
+<!DOCTYPE html>
+...
+'''
+3. 如果你没有使用三单引号，至少也要直接输出完整 HTML 文档本体，不要夹杂任何额外文字。
+4. HTML 必须完整，包含 <!DOCTYPE html>。`;
+}
+
+async function requestReadmeHtmlWithRetry({
+  repo,
+  repoUrl,
+  readmeResult,
+  aiConfig,
+  htmlPrompt,
+}) {
+  const requestHtml = async (userContent, temperature) => callAiChat(aiConfig, [
+    { role: 'system', content: htmlPrompt },
+    {
+      role: 'user',
+      content: userContent,
+    },
+  ], {
+    timeout: 300000,
+    maxTokens: 8192,
+    temperature,
+  });
+
+  const firstResult = await requestHtml(
+    buildReadmeHtmlUserPrompt(repo, repoUrl, readmeResult),
+    0.4,
+  );
+  const firstExtractedHtml = firstResult.ok ? extractHtmlFromAiResponse(firstResult.content) : '';
+
+  if (firstResult.ok && firstExtractedHtml) {
+    return {
+      ...firstResult,
+      extractedHtml: firstExtractedHtml,
+      retried: false,
+    };
+  }
+
+  const retryReason = firstResult.ok
+    ? 'AI 返回内容中未提取到有效 HTML'
+    : firstResult.message;
+  log(`[README] ${repo.name} HTML 生成异常，正在自动重试 1 次: ${retryReason}`, 'warn');
+
+  const retryResult = await requestHtml(
+    buildReadmeHtmlRetryUserPrompt(repo, repoUrl, readmeResult, firstResult.content, retryReason),
+    0.2,
+  );
+  const retryExtractedHtml = retryResult.ok ? extractHtmlFromAiResponse(retryResult.content) : '';
+
+  if (retryResult.ok && retryExtractedHtml) {
+    log(`[README] ${repo.name} HTML 重试生成成功`, 'success');
+    return {
+      ...retryResult,
+      extractedHtml: retryExtractedHtml,
+      retried: true,
+    };
+  }
+
+  if (!retryResult.ok) {
+    return retryResult;
+  }
+
+  const preview = sanitizeAiContent(String(retryResult.content || firstResult.content || ''))
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 200);
+
+  return {
+    ok: false,
+    message: `HTML 提取失败：已自动重试 1 次，仍未找到有效的 HTML 内容${preview ? `，预览: ${preview}` : ''}`,
+    model: retryResult.model || firstResult.model || aiConfig.model,
+    content: retryResult.content || firstResult.content || '',
+  };
+}
+
 async function processSelectedReadmeRepo({
   repo,
   index,
@@ -1265,26 +2240,19 @@ async function processSelectedReadmeRepo({
     log(`[README] ${repo.name} README 抓取成功${readmeResult.truncated ? ' (已截断)' : ''}`, 'success');
     log(`[README] ${repo.name} 开始生成 HTML`, 'info');
 
-    const htmlResult = await callAiChat(aiConfig, [
-      { role: 'system', content: htmlPrompt },
-      {
-        role: 'user',
-        content: buildReadmeHtmlUserPrompt(repo, repoUrl, readmeResult),
-      },
-    ], {
-      timeout: 300000,
-      maxTokens: 8192,
-      temperature: 0.4,
+    const htmlResult = await requestReadmeHtmlWithRetry({
+      repo,
+      repoUrl,
+      readmeResult,
+      aiConfig,
+      htmlPrompt,
     });
 
     if (!htmlResult.ok) {
       throw new Error(`HTML 生成失败: ${htmlResult.message}`);
     }
 
-    const extractedHtml = extractHtmlFromAiResponse(htmlResult.content);
-    if (!extractedHtml) {
-      throw new Error('HTML 提取失败: AI 返回内容中未找到有效的三单引号代码块');
-    }
+    const extractedHtml = String(htmlResult.extractedHtml || '').trim();
 
     const imageCopyResult = copyRepoImagesToOutput(selectedImagePaths, repoDirPath);
     if (imageCopyResult.imageCount > 0) {
@@ -1487,21 +2455,48 @@ async function handleFetchSelectedReadmes(payload = {}) {
     ? Array.from(pipelineUsedAiModels).join(', ')
     : aiConfig.model;
 
+  const introText = buildGitHubBriefingWelcomeText();
+  const outroText = GITHUB_BRIEFING_OUTRO_TEXT;
+
+  log('[README] 开始生成首页欢迎语', 'info');
+  const introItem = await createBriefingNarrationCardItem({
+    outputDir: pipelineOutputDir,
+    dirName: '00-opening',
+    segmentType: 'intro',
+    title: 'GitHub 早报',
+    ttsText: introText,
+    kicker: '今日播报',
+    body: introText,
+    ttsConfig,
+  });
+  log(`[README] 首页欢迎语已生成: ${introItem.htmlEntryPath}`, 'success');
+
+  log('[README] 开始合并结束语到最后一页', 'info');
+  const mergedLastItem = await mergeBriefingOutroIntoLastItem(pipelineSuccessItems, outroText, ttsConfig);
+  if (mergedLastItem?.htmlEntryPath) {
+    log(`[README] 结束语已合并到最后一页: ${mergedLastItem.htmlEntryPath}`, 'success');
+  }
+  const pipelineCarouselItems = [introItem, ...pipelineSuccessItems];
+
   const pipelineManifest = {
     generatedAt: new Date().toISOString(),
     aiModel: pipelineAiModelSummary,
     ttsModel: ttsConfig.model,
     ttsFormat: ttsConfig.format,
-    items: pipelineSuccessItems.map((item) => ({
+    items: pipelineCarouselItems.map((item) => ({
       title: item.title,
       repoName: item.repoName,
       repoUrl: item.repoUrl,
+      segmentType: item.segmentType || 'repo',
       repoDirName: item.repoDirName,
       htmlFileName: item.htmlFileName,
+      htmlPath: item.htmlPath || '',
       htmlEntryPath: item.htmlEntryPath,
       audioFileName: item.audioFileName,
+      audioPath: item.audioPath || '',
       audioEntryPath: item.audioEntryPath,
       audioDurationMs: item.audioDurationMs || null,
+      ttsText: item.narrationText || '',
       imageCount: item.imageCount || 0,
       readmePath: item.readmePath,
     })),
@@ -1509,7 +2504,7 @@ async function handleFetchSelectedReadmes(payload = {}) {
   };
 
   fs.writeFileSync(pipelineManifestPath, JSON.stringify(pipelineManifest, null, 2), 'utf8');
-  fs.writeFileSync(pipelineEntryHtmlPath, buildCarouselIndexHtml(pipelineSuccessItems), 'utf8');
+  fs.writeFileSync(pipelineEntryHtmlPath, buildCarouselIndexHtml(pipelineCarouselItems), 'utf8');
   log(`[README] 轮播入口已生成: ${pipelineEntryHtmlPath}`, 'success');
 
   return {
@@ -1566,23 +2561,12 @@ async function handleFetchSelectedReadmes(payload = {}) {
       log(`[README] ${repo.name} README 抓取成功${readmeResult.truncated ? ' (已截断)' : ''}`, 'success');
       log(`[README] ${repo.name} 开始生成 HTML`, 'info');
 
-      const htmlResult = await callAiChat(aiConfig, [
-        { role: 'system', content: htmlPrompt },
-        {
-          role: 'user',
-          content: `请基于以下 GitHub 仓库 README 生成完整 HTML。
-
-仓库名：${repo.name}
-仓库链接：${repoUrl}
-README 文件：${readmeResult.path}
-
-README 内容：
-${readmeResult.content}`,
-        },
-      ], {
-        timeout: 300000,
-        maxTokens: 8192,
-        temperature: 0.4,
+      const htmlResult = await requestReadmeHtmlWithRetry({
+        repo,
+        repoUrl,
+        readmeResult,
+        aiConfig,
+        htmlPrompt,
       });
 
       if (!htmlResult.ok) {
@@ -1590,10 +2574,7 @@ ${readmeResult.content}`,
       }
 
       lastAiModel = htmlResult.model || lastAiModel;
-      const extractedHtml = extractHtmlFromAiResponse(htmlResult.content);
-      if (!extractedHtml) {
-        throw new Error('HTML 提取失败: AI 返回内容中未找到有效的三单引号代码块');
-      }
+      const extractedHtml = String(htmlResult.extractedHtml || '').trim();
 
       const imageCopyResult = copyRepoImagesToOutput(selectedImagePaths, repoDirPath);
       if (imageCopyResult.imageCount > 0) {
@@ -1942,32 +2923,136 @@ function findSimilarRepos(repos, savedRepos, tagMap) {
 
 async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
   const { systemPrompt } = aiConfig;
+  const structuredAiConfig = { ...aiConfig };
+  const structuredFallbackModel = getStructuredOutputFallbackModel(aiConfig?.baseUrl, aiConfig?.model);
+  if (structuredFallbackModel && structuredFallbackModel !== aiConfig.model) {
+    structuredAiConfig.model = structuredFallbackModel;
+  }
 
   log('[AI] 准备分析数据...', 'info');
+  if (structuredAiConfig.model !== aiConfig.model) {
+    log(`[AI] 结构化分析改用 ${structuredAiConfig.model}，避免 ${aiConfig.model} 空正文`, 'info');
+  }
 
   const callAI = (messages, timeout, maxTokens) => callAiChat(aiConfig, messages, {
     timeout,
     maxTokens,
     temperature: 0.7,
   });
+  const callStructuredAI = (messages, timeout, maxTokens) => callAiChat(structuredAiConfig, messages, {
+    timeout,
+    maxTokens,
+    temperature: 0,
+  });
+  const forceChineseOutputInstruction =
+    '无论如何都要输出中文。即使输入内容、仓库名、标签、引用材料或上下文中包含英文，也不要改用英文回答。';
+  const withForcedChineseOutput = (prompt) =>
+    `${String(prompt || '').trim()}\n\n额外要求：${forceChineseOutputInstruction}`;
 
   // Parse tag analysis response: "name|tag1,tag2|description" per line
   function parseTagAnalysis(content) {
     const tagMap = {};
-    const lines = content.split('\n').filter(l => l.trim());
-    for (const line of lines) {
+    const normalizedText = String(content || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/<think>[\s\S]*?<\/think>/gi, '\n')
+      .replace(/```[^\n\r]*\r?\n/g, '\n')
+      .replace(/```/g, '\n')
+      .replace(/[｜¦]/g, '|');
+    const lines = normalizedText
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean);
+    for (const rawLine of lines) {
+      const line = rawLine
+        .replace(/^\s*(?:[-*•]+|\d+[.)]|第\s*\d+\s*[项条])\s*/u, '')
+        .replace(/\s*\|\s*/g, '|');
       const parts = line.split('|');
       if (parts.length >= 3) {
-        const name = parts[0].trim();
-        const tags = parts[1].split(',').map(t => t.trim()).filter(t => t);
-        const description = parts.slice(2).join('|').trim();
-        if (name && tags.length > 0) {
+        const name = parts[0]
+          .replace(/^(?:仓库|项目|repo|repository)\s*[:：]\s*/i, '')
+          .trim();
+        const tags = parts[1]
+          .replace(/^(?:标签|tags?)\s*[:：]\s*/i, '')
+          .split(/[，,、]/)
+          .map(t => t.trim())
+          .filter(t => t);
+        const description = parts.slice(2)
+          .join('|')
+          .replace(/^(?:描述|说明|desc(?:ription)?)\s*[:：]\s*/i, '')
+          .trim();
+        if (name && name.includes('/') && tags.length > 0) {
           tagMap[name] = { tags, description };
         }
       }
     }
     return tagMap;
   }
+
+  const buildChinesePrompt = (prompt) =>
+    `${String(prompt || '').trim()}\n\nAdditional requirement: ${forceChineseOutputInstruction}`;
+  const structuredOutputGuard = [
+    'Structured output only.',
+    'Do not output thinking, reasoning, explanations, markdown, code fences, XML, or <think> tags.',
+    'Do not output any prose before or after the structured data.',
+    'If line format is requested, return exactly one repo per line: owner/repo|tag1,tag2|description.',
+  ].join('\n');
+  const withStructuredOutputGuard = (prompt) =>
+    `${buildChinesePrompt(prompt)}\n\n${structuredOutputGuard}`;
+  const buildTagAnalysisPreview = (content) => buildStructuredPreview(content, 200);
+  const runStructuredRepoMappingRequest = async ({
+    systemPromptText,
+    userContent,
+    expectedRepoNames = [],
+    retryLabel = 'structured output',
+    timeout = 300000,
+    maxTokens = 4096,
+  }) => {
+    const primaryResult = await callStructuredAI([
+      { role: 'system', content: withStructuredOutputGuard(systemPromptText) },
+      { role: 'user', content: userContent },
+    ], timeout, maxTokens);
+
+    if (!primaryResult.ok) {
+      return primaryResult;
+    }
+
+    let tagMap = parseStructuredRepoTagMap(primaryResult.content, expectedRepoNames);
+    if (Object.keys(tagMap).length > 0) {
+      return { ...primaryResult, tagMap, retried: false };
+    }
+
+    log(`[AI] ${retryLabel}: 结构化输出未命中，正在使用 JSON 重试`, 'warn');
+
+    const retryPrompt = [
+      String(systemPromptText || '').trim(),
+      '',
+      'Retry mode: return valid JSON only.',
+      'No prose, no markdown, no code fences, no <think> tags.',
+      'Use this exact schema:',
+      '{"items":[{"name":"owner/repo","tags":["tag1","tag2"],"description":"一句中文描述"}]}',
+      expectedRepoNames.length > 0 ? `Allowed repo names: ${expectedRepoNames.join(', ')}` : '',
+    ].filter(Boolean).join('\n');
+
+    const retryResult = await callStructuredAI([
+      { role: 'system', content: withStructuredOutputGuard(retryPrompt) },
+      { role: 'user', content: userContent },
+    ], timeout, maxTokens);
+
+    if (!retryResult.ok) {
+      return retryResult;
+    }
+
+    tagMap = parseStructuredRepoTagMapFromJson(retryResult.content, expectedRepoNames);
+    if (Object.keys(tagMap).length === 0) {
+      tagMap = parseStructuredRepoTagMap(retryResult.content, expectedRepoNames);
+    }
+
+    return {
+      ...retryResult,
+      tagMap,
+      retried: true,
+    };
+  };
 
   // Compute top N tags from repo list
   function computeTopTags(repoList, n = 5) {
@@ -2029,10 +3114,14 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
       }).join('\n');
 
       batchPromises.push(
-        callAI([
-          { role: 'system', content: tagAnalysisPrompt },
-          { role: 'user', content: batchText },
-        ], 300000, 4096).then(result => ({ index: batchStart, result }))
+        runStructuredRepoMappingRequest({
+          systemPromptText: tagAnalysisPrompt,
+          userContent: batchText,
+          expectedRepoNames: batch.map((repo) => repo.name),
+          retryLabel: `批次 ${Math.floor(batchStart / batchSize) + 1}`,
+          timeout: 300000,
+          maxTokens: 4096,
+        }).then(result => ({ index: batchStart, result }))
       );
     }
 
@@ -2044,9 +3133,18 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
       if (entry.status === 'fulfilled') {
         const { index, result } = entry.value;
         if (result.ok) {
-          const batchMap = parseTagAnalysis(result.content);
+          const batchMap = result.tagMap || {};
           Object.assign(tagMap, batchMap);
-          log(`[AI] 批次 ${Math.floor(index / batchSize) + 1}: 解析 ${Object.keys(batchMap).length} 个`, 'success');
+          const parsedCount = Object.keys(batchMap).length;
+          if (parsedCount === 0) {
+            const preview = buildTagAnalysisPreview(result.content);
+            log(
+              `[AI] 批次 ${Math.floor(index / batchSize) + 1}: 解析 0 个，模型返回格式未匹配${preview ? `，预览: ${preview}` : ''}`,
+              'warn',
+            );
+          } else {
+            log(`[AI] 批次 ${Math.floor(index / batchSize) + 1}: 解析 ${parsedCount} 个`, 'success');
+          }
         } else {
           log(`[AI] 批次 ${Math.floor(index / batchSize) + 1} 失败: ${result.message}`, 'error');
         }
@@ -2207,13 +3305,16 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
 
 请简洁回答，使用中文。`;
 
-        const descResult = await callAI([
-          { role: 'system', content: descSupplementPrompt },
-          { role: 'user', content: refEntries.join('\n\n') },
-        ], 300000);
+        const descResult = await runStructuredRepoMappingRequest({
+          systemPromptText: descSupplementPrompt,
+          userContent: refEntries.join('\n\n'),
+          expectedRepoNames: meaninglessRepos.map((repo) => repo.name),
+          retryLabel: '描述补全',
+          timeout: 300000,
+        });
 
         if (descResult.ok) {
-          const supplementMap = parseTagAnalysis(descResult.content);
+          const supplementMap = descResult.tagMap || {};
           let updated = 0;
           for (const [name, data] of Object.entries(supplementMap)) {
             if (tagMap[name]) { tagMap[name] = data; updated++; }
@@ -2344,7 +3445,7 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
     // Call 1: Current batch summary
     summaryPromises.push(
       callAI([
-        { role: 'system', content: systemPrompt || currentSummaryPrompt },
+        { role: 'system', content: buildChinesePrompt(systemPrompt || currentSummaryPrompt) },
         { role: 'user', content: `仓库总数: ${validRepos.length}\n语言分布: ${langSummary}\n\n仓库数据:\n${currentText}` },
       ], 300000).then(result => ({ type: 'current', result }))
     );
@@ -2389,7 +3490,7 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
 
         summaryPromises.push(
           callAI([
-            { role: 'system', content: trendSummaryPrompt },
+            { role: 'system', content: buildChinesePrompt(trendSummaryPrompt) },
             { role: 'user', content: trendText },
           ], 300000).then(result => ({ type: 'trend', result }))
         );

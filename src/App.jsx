@@ -5,6 +5,47 @@ import RepoImagePanel from './components/RepoImagePanel';
 import AnalysisView from './components/AnalysisView';
 import Auth from './components/Auth';
 
+function isReasoningModel(model = '') {
+  const normalizedModel = String(model || '').trim().toLowerCase();
+  if (!normalizedModel) return false;
+
+  return (
+    normalizedModel === 'deepseek-reasoner'
+    || /(?:^|[/:_-])deepseek-r1(?:$|[/:._-])/i.test(normalizedModel)
+    || /(?:^|[/:_-])reasoner(?:$|[/:._-])/i.test(normalizedModel)
+  );
+}
+
+function resolveAutoPickModel(baseUrl = '', model = '') {
+  const originalModel = String(model || '').trim();
+  const normalizedBase = String(baseUrl || '').trim().toLowerCase();
+  const normalizedModel = originalModel.toLowerCase();
+
+  if (!originalModel) {
+    return '';
+  }
+
+  if (normalizedBase.includes('api.deepseek.com')) {
+    if (normalizedModel === 'deepseek-reasoner') {
+      return 'deepseek-chat';
+    }
+
+    if (/deepseek\/deepseek-r1(?::[\w.-]+)?$/i.test(originalModel)) {
+      return originalModel.replace(/deepseek-r1/i, 'deepseek-chat');
+    }
+
+    if (/deepseek-r1(?::[\w.-]+)?$/i.test(originalModel)) {
+      return originalModel.replace(/deepseek-r1/i, 'deepseek-chat');
+    }
+  }
+
+  if (/reasoner/i.test(originalModel) && !/chat/i.test(originalModel)) {
+    return originalModel.replace(/reasoner/ig, 'chat');
+  }
+
+  return originalModel;
+}
+
 function App() {
   const [repos, setRepos] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -114,13 +155,22 @@ function App() {
 
     return Object.entries(aiConfig.vendors)
       .filter(([, vendorConfig]) => vendorConfig?.baseUrl && vendorConfig?.apiKey)
-      .map(([vendor, vendorConfig]) => ({
-        vendor,
-        baseUrl: vendorConfig.baseUrl,
-        apiKey: vendorConfig.apiKey,
-        model: vendorConfig.model,
-        systemPrompt: aiConfig.systemPrompt,
-      }));
+      .map(([vendor, vendorConfig]) => {
+        const configuredModel = String(vendorConfig.model || '').trim();
+        const autoPickModel =
+          resolveAutoPickModel(vendorConfig.baseUrl, configuredModel) || configuredModel;
+
+        return {
+          vendor,
+          baseUrl: vendorConfig.baseUrl,
+          apiKey: vendorConfig.apiKey,
+          model: autoPickModel,
+          configuredModel,
+          autoPickAdjusted: autoPickModel !== configuredModel,
+          isReasoningModel: isReasoningModel(autoPickModel),
+          systemPrompt: aiConfig.systemPrompt,
+        };
+      });
   }, [aiConfig]);
 
   const pickFastestAvailableAi = useCallback(async () => {
@@ -132,34 +182,58 @@ function App() {
       };
     }
 
-    const pending = new Set();
-    const wrappedPromises = candidates.map((candidate) => {
-      const promise = window.electronAPI.testConnection({
-        baseUrl: candidate.baseUrl,
-        apiKey: candidate.apiKey,
-        model: candidate.model,
-      })
-        .then((result) => ({ candidate, result }))
-        .catch((error) => ({
-          candidate,
-          result: { ok: false, message: error.message || '连接测试失败' },
-        }))
-        .finally(() => pending.delete(promise));
-      pending.add(promise);
-      return promise;
-    });
+    const tryPickFromCandidates = async (candidateList, failures) => {
+      const pending = new Set();
 
+      candidateList.forEach((candidate) => {
+        const promise = window.electronAPI.testConnection({
+          baseUrl: candidate.baseUrl,
+          apiKey: candidate.apiKey,
+          model: candidate.model,
+        })
+          .then((result) => ({ candidate, result }))
+          .catch((error) => ({
+            candidate,
+            result: { ok: false, message: error.message || '连接测试失败' },
+          }))
+          .finally(() => pending.delete(promise));
+        pending.add(promise);
+      });
+
+      while (pending.size > 0) {
+        const { candidate, result } = await Promise.race([...pending]);
+        if (result.ok) {
+          return {
+            ok: true,
+            candidate,
+            testResult: result,
+          };
+        }
+        failures.push(`${candidate.vendor}: ${result.message || '连接失败'}`);
+      }
+
+      return null;
+    };
+
+    const preferredCandidates = candidates.filter((candidate) => !candidate.isReasoningModel);
+    const reasoningCandidates = candidates.filter((candidate) => candidate.isReasoningModel);
     const failures = [];
-    while (pending.size > 0) {
-      const { candidate, result } = await Promise.race([...pending]);
-      if (result.ok) {
+
+    if (preferredCandidates.length > 0) {
+      const preferredResult = await tryPickFromCandidates(preferredCandidates, failures);
+      if (preferredResult?.ok) {
+        return preferredResult;
+      }
+    }
+
+    if (reasoningCandidates.length > 0) {
+      const fallbackResult = await tryPickFromCandidates(reasoningCandidates, failures);
+      if (fallbackResult?.ok) {
         return {
-          ok: true,
-          candidate,
-          testResult: result,
+          ...fallbackResult,
+          usedReasoningFallback: true,
         };
       }
-      failures.push(`${candidate.vendor}: ${result.message || '连接失败'}`);
     }
 
     return {

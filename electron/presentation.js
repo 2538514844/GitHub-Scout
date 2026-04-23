@@ -3,6 +3,7 @@ const fs = require('fs');
 const https = require('https');
 const path = require('path');
 const { pathToFileURL } = require('url');
+const { injectLocalImageRuntimeStyle } = require('./local-image-runtime');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const PRESENTATION_SETTINGS_FILE = path.join(DATA_DIR, 'presentation-settings.json');
@@ -177,6 +178,7 @@ function buildLocalHtmlDocument(filePath) {
 
   let html = fileText;
   if (/<base\s/i.test(html)) {
+    html = injectLocalImageRuntimeStyle(html);
     return {
       kind: 'srcDoc',
       srcDoc: html,
@@ -191,6 +193,8 @@ function buildLocalHtmlDocument(filePath) {
   } else {
     html = `<!DOCTYPE html><html><head>${baseTag}</head><body>${html}</body></html>`;
   }
+
+  html = injectLocalImageRuntimeStyle(html);
 
   return {
     kind: 'srcDoc',
