@@ -12,6 +12,8 @@ const AUTH_FILE = path.join(DATA_DIR, 'auth.json');
 const PROMPT_FILE = path.join(__dirname, '..', 'prompts', 'final_prompt.txt');
 const README_CAROUSEL_RUNS_DIR = path.join(DATA_DIR, 'readme-carousel-runs');
 const README_PIPELINE_CONCURRENCY = 3;
+const PAGE_TURN_SOUND_FILE_NAME = 'mixkit-fast-double-click-on-mouse-275.wav';
+const PAGE_TURN_SOUND_SOURCE_PATH = path.join(__dirname, '..', PAGE_TURN_SOUND_FILE_NAME);
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(README_CAROUSEL_RUNS_DIR)) fs.mkdirSync(README_CAROUSEL_RUNS_DIR, { recursive: true });
@@ -1380,7 +1382,17 @@ async function createBriefingNarrationCardItem({
   };
 }
 
-function buildCarouselIndexHtml(items) {
+function copyPageTurnSoundToOutput(outputDir) {
+  if (!outputDir || !fs.existsSync(PAGE_TURN_SOUND_SOURCE_PATH)) {
+    return '';
+  }
+
+  const targetPath = path.join(outputDir, PAGE_TURN_SOUND_FILE_NAME);
+  fs.copyFileSync(PAGE_TURN_SOUND_SOURCE_PATH, targetPath);
+  return PAGE_TURN_SOUND_FILE_NAME;
+}
+
+function buildCarouselIndexHtml(items, pageTurnSoundEntryPath = '') {
   const payload = JSON.stringify(items.map((item) => ({
     title: item.title,
     repoName: item.repoName,
@@ -1389,6 +1401,7 @@ function buildCarouselIndexHtml(items) {
     audioEntryPath: item.audioEntryPath || item.audioFileName,
     audioDurationMs: item.audioDurationMs || null,
   })));
+  const pageTurnSoundPayload = JSON.stringify(String(pageTurnSoundEntryPath || ''));
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1449,14 +1462,22 @@ function buildCarouselIndexHtml(items) {
   <audio id="audio" preload="auto"></audio>
   <script>
     const items = ${payload};
+    const pageTurnSoundSrc = ${pageTurnSoundPayload};
     const frame = document.getElementById('frame');
     const audio = document.getElementById('audio');
     const startButton = document.getElementById('start-button');
+    const pageTurnSfx = pageTurnSoundSrc ? new Audio(pageTurnSoundSrc) : null;
 
     let currentIndex = 0;
     let frameLoadToken = 0;
     let fallbackTimer = null;
+    let narrationTimer = null;
     let started = false;
+
+    if (pageTurnSfx) {
+      pageTurnSfx.preload = 'auto';
+      pageTurnSfx.volume = 0.2;
+    }
 
     function clearFallbackTimer() {
       if (fallbackTimer) {
@@ -1465,10 +1486,17 @@ function buildCarouselIndexHtml(items) {
       }
     }
 
+    function clearNarrationTimer() {
+      if (narrationTimer) {
+        clearTimeout(narrationTimer);
+        narrationTimer = null;
+      }
+    }
+
     function getFallbackDelay(item) {
       const duration = Number(item.audioDurationMs);
       if (Number.isFinite(duration) && duration > 0) {
-        return duration + 240;
+        return duration + (pageTurnSfx ? 360 : 240);
       }
       return 3200;
     }
@@ -1479,8 +1507,24 @@ function buildCarouselIndexHtml(items) {
       audio.load();
     }
 
+    function playPageTurnSound() {
+      if (!pageTurnSfx) return;
+
+      try {
+        pageTurnSfx.pause();
+        pageTurnSfx.currentTime = 0;
+        const playback = pageTurnSfx.play();
+        if (playback && typeof playback.catch === 'function') {
+          playback.catch(() => {});
+        }
+      } catch (error) {
+        // Ignore page turn sound failures and keep the carousel running.
+      }
+    }
+
     function advanceToNext() {
       clearFallbackTimer();
+      clearNarrationTimer();
       stopAudio();
       if (currentIndex >= items.length - 1) {
         return;
@@ -1508,6 +1552,7 @@ function buildCarouselIndexHtml(items) {
 
     function bindCurrentItem() {
       clearFallbackTimer();
+      clearNarrationTimer();
       if (!started) return;
       const item = items[currentIndex];
       const token = ++frameLoadToken;
@@ -1518,10 +1563,15 @@ function buildCarouselIndexHtml(items) {
         stopAudio();
         audio.src = item.audioEntryPath;
         audio.load();
+        playPageTurnSound();
         scheduleFallbackAdvance(item);
-        playCurrentAudio(item, token);
+        narrationTimer = setTimeout(() => {
+          if (token !== frameLoadToken) return;
+          playCurrentAudio(item, token);
+        }, pageTurnSfx ? 120 : 0);
       };
 
+      frame.style.visibility = 'hidden';
       frame.src = item.htmlEntryPath;
     }
 
@@ -2503,8 +2553,19 @@ async function handleFetchSelectedReadmes(payload = {}) {
     failures: pipelineFailures,
   };
 
+  const pipelinePageTurnSoundEntryPath = copyPageTurnSoundToOutput(pipelineOutputDir);
+  if (pipelinePageTurnSoundEntryPath) {
+    log(`[README] 已复制切页音效: ${pipelinePageTurnSoundEntryPath}`, 'success');
+  } else {
+    log(`[README] 未找到切页音效文件: ${PAGE_TURN_SOUND_FILE_NAME}，轮播入口将不播放切页音`, 'warn');
+  }
+
   fs.writeFileSync(pipelineManifestPath, JSON.stringify(pipelineManifest, null, 2), 'utf8');
-  fs.writeFileSync(pipelineEntryHtmlPath, buildCarouselIndexHtml(pipelineCarouselItems), 'utf8');
+  fs.writeFileSync(
+    pipelineEntryHtmlPath,
+    buildCarouselIndexHtml(pipelineCarouselItems, pipelinePageTurnSoundEntryPath),
+    'utf8',
+  );
   log(`[README] 轮播入口已生成: ${pipelineEntryHtmlPath}`, 'success');
 
   return {
@@ -2690,8 +2751,15 @@ async function handleFetchSelectedReadmes(payload = {}) {
     failures,
   };
 
+  const pageTurnSoundEntryPath = copyPageTurnSoundToOutput(outputDir);
+  if (pageTurnSoundEntryPath) {
+    log(`[README] 已复制切页音效: ${pageTurnSoundEntryPath}`, 'success');
+  } else {
+    log(`[README] 未找到切页音效文件: ${PAGE_TURN_SOUND_FILE_NAME}，轮播入口将不播放切页音`, 'warn');
+  }
+
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
-  fs.writeFileSync(entryHtmlPath, buildCarouselIndexHtml(successItems), 'utf8');
+  fs.writeFileSync(entryHtmlPath, buildCarouselIndexHtml(successItems, pageTurnSoundEntryPath), 'utf8');
   log(`[README] 轮播入口已生成: ${entryHtmlPath}`, 'success');
 
   return {

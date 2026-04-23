@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect } from 'react';
 
-function AnalysisView({ analysis, repoUrlMap = {}, onRepoClick }) {
+function AnalysisView({ analysis, repoUrlMap = {}, onRepoClick, onNavigateSound }) {
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
@@ -95,6 +95,11 @@ function AnalysisView({ analysis, repoUrlMap = {}, onRepoClick }) {
     }
   }, [onRepoClick]);
 
+  const handleCollapseToggle = useCallback(() => {
+    onNavigateSound?.('toggle');
+    setCollapsed((value) => !value);
+  }, [onNavigateSound]);
+
   if (!analysis.ok) {
     return (
       <div className="analysis-section">
@@ -102,7 +107,7 @@ function AnalysisView({ analysis, repoUrlMap = {}, onRepoClick }) {
           <h3>{panelTitle}</h3>
           <button
             className="analysis-collapse-btn"
-            onClick={() => setCollapsed(!collapsed)}
+            onClick={handleCollapseToggle}
             title={collapsed ? expandLabel : collapseLabel}
           >
             <svg
@@ -131,7 +136,7 @@ function AnalysisView({ analysis, repoUrlMap = {}, onRepoClick }) {
         <h3>{panelTitle} {analysis.model && <span className="analysis-model">{analysis.model}</span>}</h3>
         <button
           className="analysis-collapse-btn"
-          onClick={() => setCollapsed(!collapsed)}
+          onClick={handleCollapseToggle}
           title={collapsed ? expandLabel : collapseLabel}
         >
           <svg

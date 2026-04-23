@@ -4,6 +4,7 @@ import RepoTable from './components/RepoTable';
 import RepoImagePanel from './components/RepoImagePanel';
 import AnalysisView from './components/AnalysisView';
 import Auth from './components/Auth';
+import useUiSwitchSound from './hooks/useUiSwitchSound';
 
 function isReasoningModel(model = '') {
   const normalizedModel = String(model || '').trim().toLowerCase();
@@ -67,6 +68,7 @@ function App() {
   const [repoImageError, setRepoImageError] = useState('');
   const [repoTags, setRepoTags] = useState({});
   const [fetchingReadmes, setFetchingReadmes] = useState(false);
+  const { soundEnabled, setSoundEnabled, playSwitchSound } = useUiSwitchSound();
 
   // Fetch filter state
   const [showFilter, setShowFilter] = useState(false);
@@ -454,6 +456,36 @@ function App() {
     return window.electronAPI.testConnection(config);
   };
 
+  const handleUiNavigateSound = useCallback((variant = 'switch') => {
+    playSwitchSound(variant);
+  }, [playSwitchSound]);
+
+  const handleFilterToggle = () => {
+    handleUiNavigateSound('toggle');
+    setShowFilter((prev) => !prev);
+  };
+
+  const handleLogToggle = () => {
+    handleUiNavigateSound('toggle');
+    setShowLogs((prev) => !prev);
+  };
+
+  const handleConfigToggle = () => {
+    handleUiNavigateSound('toggle');
+    setShowConfig((prev) => !prev);
+  };
+
+  const handleLogTabChange = (tab) => {
+    if (tab !== activeLogTab) {
+      handleUiNavigateSound('tab');
+    }
+    setActiveLogTab(tab);
+  };
+
+  const handleSoundToggle = () => {
+    setSoundEnabled((prev) => !prev);
+  };
+
   const clearLogs = () => {
     if (activeLogTab === 'fetch') setFetchLogs([]);
     else if (activeLogTab === 'analyze') setAnalyzeLogs([]);
@@ -468,7 +500,6 @@ function App() {
     return configLogs;
   };
 
-  const currentVendor = aiConfig?.vendors?.[aiConfig?.vendor] || aiConfig?.vendors?.custom || {};
   const selectedRepos = repos.filter((repo) => selectedRepoNames.includes(repo.name));
 
   return (
@@ -515,8 +546,8 @@ function App() {
             </button>
           )}
           <button
-            className="filter-btn"
-            onClick={() => setShowFilter(!showFilter)}
+            className={`filter-btn ${showFilter ? 'active' : ''}`}
+            onClick={handleFilterToggle}
           >
             筛选 {showFilter ? '▲' : '▼'}
           </button>
@@ -550,14 +581,35 @@ function App() {
                 : '\u722C\u53D6\u63CF\u8FF0'}
           </button>
           <button
+            className={`sound-toggle-btn ${soundEnabled ? 'active' : 'muted'}`}
+            onClick={handleSoundToggle}
+            title={soundEnabled ? '关闭切页音效' : '开启切页音效'}
+            aria-pressed={soundEnabled}
+          >
+            {soundEnabled ? (
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 6h3l3-3v10L6 10H3z" />
+                <path d="M11.2 5.2a3 3 0 0 1 0 5.6" />
+                <path d="M12.8 3.6a5.2 5.2 0 0 1 0 8.8" />
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 6h3l3-3v10L6 10H3z" />
+                <path d="M12.5 5.5 9.5 10.5" />
+                <path d="M9.5 5.5 12.5 10.5" />
+              </svg>
+            )}
+            切页音
+          </button>
+          <button
             className={`log-toggle-btn ${showLogs ? 'active' : ''}`}
-            onClick={() => setShowLogs(!showLogs)}
+            onClick={handleLogToggle}
           >
             日志 {logs.length > 0 && <span className="log-badge">{logs.length > 99 ? '99+' : logs.length}</span>}
           </button>
           <button
             className="config-toggle"
-            onClick={() => setShowConfig(!showConfig)}
+            onClick={handleConfigToggle}
           >
             {showConfig ? '收起' : 'AI 配置'}
           </button>
@@ -676,6 +728,7 @@ function App() {
             aiConfig={aiConfig}
             onSave={saveAiConfig}
             onTest={handleTestConnection}
+            onNavigateSound={handleUiNavigateSound}
           />
         )}
 
@@ -703,25 +756,25 @@ function App() {
               <div className="log-tabs">
                 <button
                   className={`log-tab ${activeLogTab === 'fetch' ? 'active' : ''}`}
-                  onClick={() => setActiveLogTab('fetch')}
+                  onClick={() => handleLogTabChange('fetch')}
                 >
                   爬取日志 {fetchLogs.length > 0 && `(${fetchLogs.length})`}
                 </button>
                 <button
                   className={`log-tab ${activeLogTab === 'analyze' ? 'active' : ''}`}
-                  onClick={() => setActiveLogTab('analyze')}
+                  onClick={() => handleLogTabChange('analyze')}
                 >
                   AI 分析日志 {analyzeLogs.length > 0 && `(${analyzeLogs.length})`}
                 </button>
                 <button
                   className={`log-tab ${activeLogTab === 'auth' ? 'active' : ''}`}
-                  onClick={() => setActiveLogTab('auth')}
+                  onClick={() => handleLogTabChange('auth')}
                 >
                   登录日志 {authLogs.length > 0 && `(${authLogs.length})`}
                 </button>
                 <button
                   className={`log-tab ${activeLogTab === 'config' ? 'active' : ''}`}
-                  onClick={() => setActiveLogTab('config')}
+                  onClick={() => handleLogTabChange('config')}
                 >
                   配置 {configLogs.length > 0 && `(${configLogs.length})`}
                 </button>
@@ -741,7 +794,12 @@ function App() {
           )}
 
           {analysis && (
-            <AnalysisView analysis={analysis} repoUrlMap={analysis.repoUrlMap || {}} onRepoClick={handleRepoClick} />
+            <AnalysisView
+              analysis={analysis}
+              repoUrlMap={analysis.repoUrlMap || {}}
+              onRepoClick={handleRepoClick}
+              onNavigateSound={handleUiNavigateSound}
+            />
           )}
         </div>
       </div>

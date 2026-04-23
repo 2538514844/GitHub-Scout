@@ -33,7 +33,7 @@ const DEFAULT_PRESENTATION_CONFIG = {
   playlistText: '',
 };
 
-function ConfigPanel({ aiConfig, onSave, onTest }) {
+function ConfigPanel({ aiConfig, onSave, onTest, onNavigateSound }) {
   const vendorTabsRef = useRef(null);
   const [activeVendor, setActiveVendor] = useState(aiConfig?.vendor || 'openai');
   const [vendors, setVendors] = useState(() => {
@@ -257,7 +257,12 @@ function ConfigPanel({ aiConfig, onSave, onTest }) {
           <button
             key={id}
             className={`vendor-tab ${activeVendor === id ? 'active' : ''}`}
-            onClick={() => setActiveVendor(id)}
+            onClick={() => {
+              if (activeVendor !== id) {
+                onNavigateSound?.('tab');
+              }
+              setActiveVendor(id);
+            }}
           >
             {vendorLabels[id]}
           </button>
@@ -293,7 +298,10 @@ function ConfigPanel({ aiConfig, onSave, onTest }) {
           />
         </label>
 
-        <details className="config-details">
+        <details
+          className="config-details"
+          onToggle={() => onNavigateSound?.('toggle')}
+        >
           <summary>系统提示词（可选）</summary>
           <textarea
             value={systemPrompt}
@@ -305,7 +313,10 @@ function ConfigPanel({ aiConfig, onSave, onTest }) {
 
         <details
           className="config-details"
-          onToggle={(event) => setTtsExpanded(event.currentTarget.open)}
+          onToggle={(event) => {
+            onNavigateSound?.('toggle');
+            setTtsExpanded(event.currentTarget.open);
+          }}
         >
           <summary>MiniMax TTS / README 轮播设置</summary>
           <div className="config-subsection">
