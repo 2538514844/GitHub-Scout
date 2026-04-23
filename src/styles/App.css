@@ -1744,6 +1744,43 @@ body {
   border-radius: 10px;
 }
 
+.analysis-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 0 18px 12px;
+}
+
+.analysis-action-btn {
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.analysis-action-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.analysis-action-btn-primary {
+  background: rgba(88, 166, 255, 0.16);
+  border-color: rgba(88, 166, 255, 0.34);
+  color: #7fc0ff;
+}
+
+.analysis-action-btn-primary:hover {
+  border-color: var(--accent);
+  background: rgba(88, 166, 255, 0.24);
+  color: #9aceff;
+}
+
 .analysis-content {
   font-size: 13px;
   line-height: 1.7;

@@ -130,7 +130,7 @@ function App() {
         setAuthLogs(prev => [...prev, entry]);
       } else if (entry.message.startsWith('[爬虫]') || entry.message.startsWith('[鐖櫕]')) {
         setFetchLogs(prev => [...prev, entry]);
-      } else if (entry.message.startsWith('[AI]') || entry.message.startsWith('[README]')) {
+      } else if (entry.message.startsWith('[AI]') || entry.message.startsWith('[README]') || entry.message.startsWith('[录制]')) {
         setAnalyzeLogs(prev => [...prev, entry]);
       } else if (entry.message.startsWith('[配置]') || entry.message.startsWith('[閰嶇疆]')) {
         setConfigLogs(prev => [...prev, entry]);
@@ -459,6 +459,33 @@ function App() {
   const handleUiNavigateSound = useCallback((variant = 'switch') => {
     playSwitchSound(variant);
   }, [playSwitchSound]);
+
+  const handleOpenLocalPath = useCallback(async (targetPath) => {
+    if (!targetPath) return;
+    try {
+      await window.electronAPI.openLocalPath(targetPath);
+    } catch (error) {
+      console.error('Open local path failed:', error);
+    }
+  }, []);
+
+  const handleOpenReadmeRecorder = useCallback(async (entryHtmlPath) => {
+    if (!entryHtmlPath) return;
+    try {
+      handleUiNavigateSound('toggle');
+      await window.electronAPI.openReadmeRecorder({ entryHtmlPath });
+    } catch (error) {
+      console.error('Open recorder failed:', error);
+      setAnalyzeLogs((prev) => ([
+        ...prev,
+        {
+          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+          level: 'error',
+          message: `[README] 打开全屏录制失败: ${error.message || '未知错误'}`,
+        },
+      ]));
+    }
+  }, [handleUiNavigateSound]);
 
   const handleFilterToggle = () => {
     handleUiNavigateSound('toggle');
@@ -799,6 +826,8 @@ function App() {
               repoUrlMap={analysis.repoUrlMap || {}}
               onRepoClick={handleRepoClick}
               onNavigateSound={handleUiNavigateSound}
+              onOpenLocalPath={handleOpenLocalPath}
+              onOpenReadmeRecorder={handleOpenReadmeRecorder}
             />
           )}
         </div>

@@ -1,6 +1,13 @@
 import React, { useState, useCallback, useEffect } from 'react';
 
-function AnalysisView({ analysis, repoUrlMap = {}, onRepoClick, onNavigateSound }) {
+function AnalysisView({
+  analysis,
+  repoUrlMap = {},
+  onRepoClick,
+  onNavigateSound,
+  onOpenLocalPath,
+  onOpenReadmeRecorder,
+}) {
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
@@ -100,6 +107,9 @@ function AnalysisView({ analysis, repoUrlMap = {}, onRepoClick, onNavigateSound 
     setCollapsed((value) => !value);
   }, [onNavigateSound]);
 
+  const hasEntryHtml = Boolean(analysis?.entryHtmlPath);
+  const hasOutputDir = Boolean(analysis?.outputDir);
+
   if (!analysis.ok) {
     return (
       <div className="analysis-section">
@@ -150,6 +160,37 @@ function AnalysisView({ analysis, repoUrlMap = {}, onRepoClick, onNavigateSound 
           </svg>
         </button>
       </div>
+      {!collapsed && (hasEntryHtml || hasOutputDir) && (
+        <div className="analysis-actions">
+          {hasEntryHtml && (
+            <button
+              type="button"
+              className="analysis-action-btn analysis-action-btn-primary"
+              onClick={() => onOpenReadmeRecorder?.(analysis.entryHtmlPath)}
+            >
+              全屏录制
+            </button>
+          )}
+          {hasEntryHtml && (
+            <button
+              type="button"
+              className="analysis-action-btn"
+              onClick={() => onOpenLocalPath?.(analysis.entryHtmlPath)}
+            >
+              打开 HTML
+            </button>
+          )}
+          {hasOutputDir && (
+            <button
+              type="button"
+              className="analysis-action-btn"
+              onClick={() => onOpenLocalPath?.(analysis.outputDir)}
+            >
+              打开目录
+            </button>
+          )}
+        </div>
+      )}
       {!collapsed && (
         <div
           className="analysis-content"

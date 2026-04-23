@@ -1423,6 +1423,11 @@ function buildCarouselIndexHtml(items, pageTurnSoundEntryPath = '') {
       align-items: center;
       justify-content: center;
     }
+    #frame-stage {
+      position: fixed;
+      inset: 0;
+      background: #fff;
+    }
     #start-button {
       appearance: none;
       border: 0;
@@ -1434,18 +1439,27 @@ function buildCarouselIndexHtml(items, pageTurnSoundEntryPath = '') {
       font-weight: 700;
       cursor: pointer;
       transition: opacity 180ms ease, transform 180ms ease;
+      z-index: 10;
     }
     #start-button:hover {
       opacity: 0.92;
       transform: translateY(-1px);
     }
     iframe {
+      position: absolute;
+      inset: 0;
       width: 100%;
       height: 100%;
       display: block;
       border: 0;
       background: #fff;
-      visibility: hidden;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 180ms ease;
+    }
+    iframe.active {
+      opacity: 1;
+      pointer-events: auto;
     }
     audio {
       position: fixed;
@@ -1458,12 +1472,18 @@ function buildCarouselIndexHtml(items, pageTurnSoundEntryPath = '') {
 </head>
 <body>
   <button id="start-button" type="button">开始播放</button>
-  <iframe id="frame" title="README HTML Preview"></iframe>
+  <div id="frame-stage">
+    <iframe id="frame-a" class="active" title="README HTML Preview A"></iframe>
+    <iframe id="frame-b" title="README HTML Preview B"></iframe>
+  </div>
   <audio id="audio" preload="auto"></audio>
   <script>
     const items = ${payload};
     const pageTurnSoundSrc = ${pageTurnSoundPayload};
-    const frame = document.getElementById('frame');
+    const frames = [
+      document.getElementById('frame-a'),
+      document.getElementById('frame-b'),
+    ];
     const audio = document.getElementById('audio');
     const startButton = document.getElementById('start-button');
     const pageTurnSfx = pageTurnSoundSrc ? new Audio(pageTurnSoundSrc) : null;
@@ -1473,6 +1493,7 @@ function buildCarouselIndexHtml(items, pageTurnSoundEntryPath = '') {
     let fallbackTimer = null;
     let narrationTimer = null;
     let started = false;
+    let activeFrameIndex = 0;
 
     if (pageTurnSfx) {
       pageTurnSfx.preload = 'auto';
@@ -1507,6 +1528,10 @@ function buildCarouselIndexHtml(items, pageTurnSoundEntryPath = '') {
       audio.load();
     }
 
+    function emitCarouselEvent(name, detail = {}) {
+      window.dispatchEvent(new CustomEvent('github-scout:' + name, { detail }));
+    }
+
     function playPageTurnSound() {
       if (!pageTurnSfx) return;
 
@@ -1522,11 +1547,31 @@ function buildCarouselIndexHtml(items, pageTurnSoundEntryPath = '') {
       }
     }
 
+    function getActiveFrame() {
+      return frames[activeFrameIndex];
+    }
+
+    function getStandbyFrame() {
+      return frames[(activeFrameIndex + 1) % frames.length];
+    }
+
+    function showFrame(frame) {
+      frames.forEach((candidate) => {
+        candidate.classList.toggle('active', candidate === frame);
+      });
+      activeFrameIndex = frames.indexOf(frame);
+    }
+
     function advanceToNext() {
       clearFallbackTimer();
       clearNarrationTimer();
       stopAudio();
       if (currentIndex >= items.length - 1) {
+        emitCarouselEvent('carousel-complete', {
+          currentIndex,
+          total: items.length,
+          item: items[currentIndex] || null,
+        });
         return;
       }
       currentIndex += 1;
@@ -1550,19 +1595,36 @@ function buildCarouselIndexHtml(items, pageTurnSoundEntryPath = '') {
       }
     }
 
-    function bindCurrentItem() {
-      clearFallbackTimer();
-      clearNarrationTimer();
-      if (!started) return;
-      const item = items[currentIndex];
-      const token = ++frameLoadToken;
+    function waitForRecorderOrTimeout(callback) {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        window.removeEventListener('github-scout:recorder-started', finish);
+        window.removeEventListener('github-scout:recorder-skipped', finish);
+        clearTimeout(timer);
+        callback();
+      };
+      const timer = setTimeout(finish, 1200);
+      window.addEventListener('github-scout:recorder-started', finish, { once: true });
+      window.addEventListener('github-scout:recorder-skipped', finish, { once: true });
+    }
 
-      frame.onload = () => {
+    function afterFrameReady(item, token, frame) {
+      if (token !== frameLoadToken) return;
+
+      showFrame(frame);
+      stopAudio();
+      audio.src = item.audioEntryPath;
+      audio.load();
+      emitCarouselEvent('page-change', {
+        currentIndex,
+        total: items.length,
+        item,
+      });
+
+      const startPagePlayback = () => {
         if (token !== frameLoadToken) return;
-        frame.style.visibility = 'visible';
-        stopAudio();
-        audio.src = item.audioEntryPath;
-        audio.load();
         playPageTurnSound();
         scheduleFallbackAdvance(item);
         narrationTimer = setTimeout(() => {
@@ -1571,8 +1633,27 @@ function buildCarouselIndexHtml(items, pageTurnSoundEntryPath = '') {
         }, pageTurnSfx ? 120 : 0);
       };
 
-      frame.style.visibility = 'hidden';
-      frame.src = item.htmlEntryPath;
+      if (currentIndex === 0) {
+        waitForRecorderOrTimeout(startPagePlayback);
+      } else {
+        startPagePlayback();
+      }
+    }
+
+    function bindCurrentItem() {
+      clearFallbackTimer();
+      clearNarrationTimer();
+      if (!started) return;
+      const item = items[currentIndex];
+      const token = ++frameLoadToken;
+      const targetFrame = currentIndex === 0 ? getActiveFrame() : getStandbyFrame();
+
+      targetFrame.onload = () => {
+        targetFrame.onload = null;
+        afterFrameReady(item, token, targetFrame);
+      };
+
+      targetFrame.src = item.htmlEntryPath;
     }
 
     audio.addEventListener('ended', () => {
@@ -1589,6 +1670,11 @@ function buildCarouselIndexHtml(items, pageTurnSoundEntryPath = '') {
     startButton.addEventListener('click', () => {
       if (started || items.length === 0) return;
       started = true;
+      emitCarouselEvent('carousel-start', {
+        currentIndex,
+        total: items.length,
+        item: items[currentIndex] || null,
+      });
       startButton.remove();
       bindCurrentItem();
     });

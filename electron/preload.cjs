@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loginWithGitHubPat: (token) => ipcRenderer.invoke('login-with-github-pat', token),
   logout: () => ipcRenderer.invoke('logout'),
   openUrl: (url) => ipcRenderer.invoke('open-url', url),
+  openLocalPath: (targetPath) => ipcRenderer.invoke('open-local-path', targetPath),
+  openReadmeRecorder: (payload) => ipcRenderer.invoke('open-readme-recorder', payload),
   saveAiConfig: (config) => ipcRenderer.invoke('save-ai-config', config),
   loadAiConfig: () => ipcRenderer.invoke('load-ai-config'),
 
