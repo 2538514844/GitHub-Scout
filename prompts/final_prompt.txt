@@ -255,7 +255,18 @@ const themes = [
 ```html
 <script src="https://cdn.tailwindcss.com"></script>
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,300,0,0&display=swap" rel="stylesheet" />
-<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&display=swap" rel="stylesheet" />
+```
+
+**[1.5] 本地字体（放入 `<head>` 的 `<style>` 最前面）**
+* 必须使用 `@font-face` 声明本地字体，路径固定为 `../htmlFont.ttf`。
+```css
+@font-face {
+  font-family: 'htmlFont';
+  src: url('../htmlFont.ttf') format('truetype');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
 ```
 
 **[2] Custom CSS（放入 `<style>`）**
@@ -271,7 +282,7 @@ body {
   min-height: 100vh;
   overflow: hidden;
   background-color: #fbf9f6;
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: 'htmlFont', system-ui, -apple-system, sans-serif;
 }
 
 .main-container {
@@ -329,7 +340,7 @@ body {
   border: 0.5px solid #d1cfcc !important;
   border-radius: 8px !important;
   padding: 0.1em 0.3em;
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: 'htmlFont', system-ui, -apple-system, sans-serif;
   font-size: 0.9em;
 }
 

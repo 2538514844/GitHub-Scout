@@ -21,7 +21,7 @@ npm run electron:build
 启动.bat
 ```
 
-- The Vite dev server runs on port 5290 (strict). `electron:dev` auto-finds an available port.
+- The Vite dev server runs on port 5290 (strict). `electron:dev` auto-finds an available port via `scripts/electron-dev.js`, which starts Vite first, waits for it with `wait-on`, then spawns Electron — both share `VITE_DEV_SERVER_URL`.
 - No test runner or linter is configured. If adding tests, use a lightweight setup consistent with React 19 + Vite.
 
 ## Project Architecture
@@ -44,9 +44,10 @@ All backend logic lives here. Key modules when read top-to-bottom:
 - **Utility layer**: HTTP helpers (`httpsRequest`, `httpsGet`), JSON parsing, GitHub header builder
 - **AI parsing**: Structured output extraction from AI responses (`extractOpenAiCompatibleMessage`, `parseStructuredRepoTagMap`, `parseStructuredRepoTagMapFromJson`) with retry logic and model fallback (e.g. DeepSeek reasoner → chat for structured output)
 - **GitHub API**: Repo search (`fetchGitHub`, `handleFetchRepos`), README fetching (`fetchRepoReadme`, `handleFetchSelectedReadmes`), auth (device flow + PAT login)
-- **README carousel**: Full HTML slideshow generation pipeline — narration via AI, TTS audio via MiniMax API, local image injection, carousel index building, video recording support
+- **README carousel**: Full HTML slideshow generation pipeline. The AI system prompt template lives in `prompts/final_prompt.txt` (~900 lines). Pipeline: AI narration → TTS audio via MiniMax API → local image injection → carousel index building → video recording with screen capture (WebM) → ffmpeg transcode to MP4 (4K, x264 CRF 18, AAC 320k)
 - **AI analysis**: Multi-provider support (OpenAI-compatible as default, plus Anthropic route). Connection testing, repo batch analysis with progress reporting, structured tag/description output, history-aware analysis (reuses tags from similar past repos)
 - **Data persistence**: JSON files in `data/` — `settings.json` (AI config), `auth.json` (GitHub token), `repo_analysis.json` (analysis history)
+- **Video transcode**: `main.js` includes a WebM→MP4 ffmpeg pipeline using `ffmpeg-static`. `electron-builder.json` has `asarUnpack` for `node_modules/ffmpeg-static/**/*` — ffmpeg can't run from within an asar archive
 
 **`electron/presentation.js`** (~650 lines) — Standalone TTS and slideshow manager:
 - MiniMax TTS API integration with local audio caching (`data/tts-cache/`)
@@ -78,17 +79,41 @@ All backend logic lives here. Key modules when read top-to-bottom:
 
 ### Key IPC Channels
 
+**Core workflow**
 | Channel | Direction | Purpose |
 |---|---|---|
 | `fetch-repos` | renderer → main | GitHub repo search |
+| `fetch-selected-readmes` | renderer → main | Fetch READMEs for selected repos |
 | `analyze-repos` | renderer → main | AI batch analysis |
 | `test-connection` | renderer → main | AI provider connectivity check |
 | `log-entry` | main → renderer | Real-time log streaming |
-| `open-url` | renderer → main | Open external URL |
+
+**Auth**
+| Channel | Direction | Purpose |
+|---|---|---|
+| `get-auth-status` | renderer → main | Check current GitHub auth state |
+| `start-github-login` / `poll-github-token` | renderer → main | Device flow login |
+| `login-with-github-pat` / `logout` | renderer → main | PAT login and logout |
+
+**Presentation & recording**
+| Channel | Direction | Purpose |
+|---|---|---|
+| `load-presentation-config` / `save-presentation-config` | renderer ↔ main | Presentation/TTS config persistence |
+| `test-presentation-tts` | renderer → main | Test TTS audio generation |
+| `select-presentation-manifest` | renderer → main | Native dialog to pick a playlist JSON |
+| `prepare-presentation-session` | renderer → main | Build carousel HTML files (supports progress via `presentation-progress` push) |
+| `open-readme-recorder` | renderer → main | Open fullscreen recorder window for carousel video capture |
+| `save-recorded-video` | renderer → main | Save/transcode recorded WebM to MP4 via ffmpeg |
+| `recorder-log` | renderer → main | Forward recorder process logs to main log emitter |
+
+**Files & UI**
+| Channel | Direction | Purpose |
+|---|---|---|
+| `select-repo-images` | renderer → main | Native multi-file image picker for a repo |
+| `open-url` / `open-local-path` | renderer → main | Open external URL or local file/folder |
 | `save-ai-config` / `load-ai-config` | renderer ↔ main | AI config persistence |
-| `open-readme-recorder` | renderer → main | Open recorder window for carousel capture |
-| `prepare-presentation-session` | renderer → main | Build carousel HTML files |
 | Window controls | renderer → main | `minimize`, `maximize`, `close` (frameless window) |
+| `close-current-window` | renderer → main | Close the calling BrowserWindow |
 
 ### Data Flow (primary path)
 1. User sets search filters + AI config in UI
@@ -104,3 +129,6 @@ All backend logic lives here. Key modules when read top-to-bottom:
 - `resolveAutoPickModel` replaces reasoner models with chat models for DeepSeek (reasoner doesn't support structured output well)
 - The frameless window has custom title bar controls (minimize/maximize/close IPC handlers)
 - Sound effects use an Audio element pool (3 instances) with throttling (min interval per variant)
+- Recorder data flow: `MediaRecorder` API in `recorder-preload.cjs` captures screen as WebM → `save-recorded-video` handler in `main.js` transcodes to MP4 via `ffmpeg-static`. The `asarUnpack` in `electron-builder.json` is required because ffmpeg can't run from within an asar archive
+- `presentation-progress` is a main→renderer push channel (not an invoke), exposed via `onPresentationProgress` which returns an unsubscribe function
+- Carousel HTML pages (`prompts/final_prompt.txt`) are AI-generated, single-page, 1920×1080 fixed-viewport documents with TTS-driven local image slideshow logic

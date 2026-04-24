@@ -14,6 +14,13 @@ const README_CAROUSEL_RUNS_DIR = path.join(DATA_DIR, 'readme-carousel-runs');
 const README_PIPELINE_CONCURRENCY = 3;
 const PAGE_TURN_SOUND_FILE_NAME = 'mixkit-fast-double-click-on-mouse-275.wav';
 const PAGE_TURN_SOUND_SOURCE_PATH = path.join(__dirname, '..', PAGE_TURN_SOUND_FILE_NAME);
+const HTML_FONT_FILE_NAME = 'htmlFont.ttf';
+const HTML_FONT_SOURCE_PATH = path.join(DATA_DIR, 'fonts', HTML_FONT_FILE_NAME);
+const SOURCE_APP_FONT_STACK = "'Google Sans', 'Roboto', 'Noto Sans SC', 'htmlFont', system-ui, -apple-system, sans-serif";
+const SOURCE_APP_FONT_LINKS = `
+  <link id="repo-google-fonts-preconnect" rel="preconnect" href="https://fonts.googleapis.com" />
+  <link id="repo-google-fonts-gstatic-preconnect" rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link id="repo-google-fonts-stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@300;400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet" />`;
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(README_CAROUSEL_RUNS_DIR)) fs.mkdirSync(README_CAROUSEL_RUNS_DIR, { recursive: true });
@@ -847,8 +854,62 @@ function injectPageAudioDurationIntoHtml(htmlContent, audioDurationMs) {
   return `<!DOCTYPE html><html><head>${durationBridge}</head><body>${withoutOldBridge}</body></html>`;
 }
 
+let cachedFontBase64 = null;
+
+function getFontBase64() {
+  if (cachedFontBase64) {
+    return cachedFontBase64;
+  }
+  if (!fs.existsSync(HTML_FONT_SOURCE_PATH)) {
+    return '';
+  }
+  cachedFontBase64 = fs.readFileSync(HTML_FONT_SOURCE_PATH).toString('base64');
+  return cachedFontBase64;
+}
+
+function injectFontIntoHtml(htmlContent) {
+  const fontBase64 = getFontBase64();
+  if (!fontBase64) {
+    return htmlContent;
+  }
+
+  const html = String(htmlContent || '').trim();
+  if (!html) {
+    return html;
+  }
+
+  const styleTag = `${SOURCE_APP_FONT_LINKS}
+<style id="repo-custom-font-style">
+  @font-face {
+    font-family: 'htmlFont';
+    src: url(data:font/ttf;base64,${fontBase64}) format('truetype');
+  }
+  body {
+    font-family: ${SOURCE_APP_FONT_STACK} !important;
+  }
+  .main-container {
+    font-family: ${SOURCE_APP_FONT_STACK} !important;
+  }
+</style>`;
+
+  const cleaned = html
+    .replace(/\s*<style[^>]+id=["']repo-custom-font-style["'][\s\S]*?<\/style>/ig, '')
+    .replace(/\s*<link[^>]+id=["']repo-google-fonts-(?:preconnect|gstatic-preconnect|stylesheet)["'][^>]*>/ig, '');
+
+  if (/<\/head>/i.test(cleaned)) {
+    return cleaned.replace(/<\/head>/i, `${styleTag}\n</head>`);
+  }
+
+  if (/<head[^>]*>/i.test(cleaned)) {
+    return cleaned.replace(/<head([^>]*)>/i, `<head$1>\n${styleTag}`);
+  }
+
+  return `<!DOCTYPE html><html><head>${styleTag}</head><body>${cleaned}</body></html>`;
+}
+
 function injectLocalImageManifestIntoHtml(htmlContent, images, audioDurationMs = null) {
-  let html = injectPageAudioDurationIntoHtml(htmlContent, audioDurationMs);
+  let html = injectFontIntoHtml(htmlContent);
+  html = injectPageAudioDurationIntoHtml(html, audioDurationMs);
   const normalizedImages = Array.isArray(images)
     ? images.filter((item) => typeof item === 'string' && item.trim())
     : [];
@@ -974,9 +1035,16 @@ function buildBriefingNarrationCardHtml({
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${escapeHtml(title)}</title>
   <script src="https://cdn.tailwindcss.com"></script>
+${SOURCE_APP_FONT_LINKS}
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,300,0,0&display=swap" rel="stylesheet" />
-  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&display=swap" rel="stylesheet" />
   <style>
+    @font-face {
+      font-family: 'htmlFont';
+      src: url('../htmlFont.ttf') format('truetype');
+      font-weight: 100 900;
+      font-style: normal;
+      font-display: block;
+    }
     *, ::before, ::after { box-sizing: border-box; }
     html, body { height: 100%; }
 
@@ -988,7 +1056,7 @@ function buildBriefingNarrationCardHtml({
       min-height: 100vh;
       overflow: hidden;
       background-color: #fbf9f6;
-      font-family: system-ui, -apple-system, sans-serif;
+      font-family: ${SOURCE_APP_FONT_STACK};
     }
 
     .main-container {
@@ -1314,7 +1382,7 @@ async function mergeBriefingOutroIntoLastItem(items, outroText, ttsConfig) {
   const audioEntryPath = `${lastItem.repoDirName}/${audioFileName}`;
   const currentHtml = fs.readFileSync(lastItem.htmlPath, 'utf8');
   const htmlWithOutro = injectBriefingOutroIntoHtml(currentHtml, outroText, previousAudioDurationMs);
-  const finalHtml = injectPageAudioDurationIntoHtml(htmlWithOutro, audioResult.durationMs);
+  const finalHtml = injectFontIntoHtml(injectPageAudioDurationIntoHtml(htmlWithOutro, audioResult.durationMs));
 
   fs.copyFileSync(audioResult.audioPath, audioFilePath);
   fs.writeFileSync(lastItem.htmlPath, finalHtml, 'utf8');
@@ -1357,7 +1425,7 @@ async function createBriefingNarrationCardItem({
     body,
     dateLabel: buildGitHubBriefingDateLabel(),
   });
-  const finalHtml = injectPageAudioDurationIntoHtml(cardHtml, audioResult.durationMs);
+  const finalHtml = injectFontIntoHtml(injectPageAudioDurationIntoHtml(cardHtml, audioResult.durationMs));
 
   fs.writeFileSync(htmlFilePath, finalHtml, 'utf8');
   fs.copyFileSync(audioResult.audioPath, audioFilePath);
@@ -1390,6 +1458,16 @@ function copyPageTurnSoundToOutput(outputDir) {
   const targetPath = path.join(outputDir, PAGE_TURN_SOUND_FILE_NAME);
   fs.copyFileSync(PAGE_TURN_SOUND_SOURCE_PATH, targetPath);
   return PAGE_TURN_SOUND_FILE_NAME;
+}
+
+function copyFontToOutput(outputDir) {
+  if (!outputDir || !fs.existsSync(HTML_FONT_SOURCE_PATH)) {
+    return '';
+  }
+
+  const targetPath = path.join(outputDir, HTML_FONT_FILE_NAME);
+  fs.copyFileSync(HTML_FONT_SOURCE_PATH, targetPath);
+  return HTML_FONT_FILE_NAME;
 }
 
 function buildCarouselIndexHtml(items, pageTurnSoundEntryPath = '') {
@@ -2640,6 +2718,7 @@ async function handleFetchSelectedReadmes(payload = {}) {
   };
 
   const pipelinePageTurnSoundEntryPath = copyPageTurnSoundToOutput(pipelineOutputDir);
+  copyFontToOutput(pipelineOutputDir);
   if (pipelinePageTurnSoundEntryPath) {
     log(`[README] 已复制切页音效: ${pipelinePageTurnSoundEntryPath}`, 'success');
   } else {
@@ -2838,6 +2917,7 @@ async function handleFetchSelectedReadmes(payload = {}) {
   };
 
   const pageTurnSoundEntryPath = copyPageTurnSoundToOutput(outputDir);
+  copyFontToOutput(outputDir);
   if (pageTurnSoundEntryPath) {
     log(`[README] 已复制切页音效: ${pageTurnSoundEntryPath}`, 'success');
   } else {
