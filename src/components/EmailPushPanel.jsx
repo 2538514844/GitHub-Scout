@@ -1,0 +1,512 @@
+import { useState, useCallback, useRef, useEffect } from 'react';
+
+const DEFAULT_CRAWL_CONFIG = {
+  keyword: '',
+  maxPages: 1,
+  minStars: 5,
+  maxStars: '',
+  minForks: '',
+  maxForks: '',
+  startDate: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+  endDate: new Date().toISOString().split('T')[0],
+};
+
+function generateId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+}
+
+function newAccount() {
+  return {
+    id: generateId(),
+    name: '',
+    smtpHost: '',
+    smtpPort: 587,
+    smtpUser: '',
+    smtpPass: '',
+    useTls: true,
+    crawlConfig: { ...DEFAULT_CRAWL_CONFIG },
+    recipients: [],
+    rssConfig: {
+      enabled: false,
+      title: '',
+      description: '',
+      link: '',
+      repo: '',
+      branch: 'main',
+      filePath: 'feed.xml',
+      commitMessage: 'Update RSS feed',
+      publicUrl: '',
+    },
+  };
+}
+
+export default function EmailPushPanel({
+  accounts = [],
+  onUpdateAccounts,
+  onCrawlAccount,
+  onOpenEditor,
+  crawlingAccountId,
+  loading,
+}) {
+  const [activeId, setActiveId] = useState(() => (accounts.length > 0 ? accounts[0].id : null));
+  const [editDraft, setEditDraft] = useState(null);
+  const [testResult, setTestResult] = useState(null);
+  const [testing, setTesting] = useState(false);
+  const [recipientInput, setRecipientInput] = useState('');
+  const [savedFlag, setSavedFlag] = useState(null);
+
+  const activeAccount = accounts.find((a) => a.id === activeId) || null;
+
+  useEffect(() => {
+    if (activeAccount) {
+      setEditDraft(JSON.parse(JSON.stringify(activeAccount)));
+    } else {
+      setEditDraft(null);
+    }
+    setTestResult(null);
+  }, [activeId, accounts]);
+
+  const updateDraft = useCallback(
+    (key, value) => {
+      setEditDraft((prev) => (prev ? { ...prev, [key]: value } : prev));
+    },
+    [],
+  );
+
+  const updateCrawl = useCallback(
+    (key, value) => {
+      setEditDraft((prev) => {
+        if (!prev) return prev;
+        return { ...prev, crawlConfig: { ...prev.crawlConfig, [key]: value } };
+      });
+    },
+    [],
+  );
+
+  const updateRss = useCallback(
+    (key, value) => {
+      setEditDraft((prev) => {
+        if (!prev) return prev;
+        return { ...prev, rssConfig: { ...prev.rssConfig, [key]: value } };
+      });
+    },
+    [],
+  );
+
+  const handleSelectAccount = useCallback((id) => {
+    setActiveId(id);
+    setTestResult(null);
+  }, []);
+
+  const handleAddAccount = useCallback(() => {
+    const account = newAccount();
+    const next = [...accounts, account];
+    onUpdateAccounts(next);
+    setActiveId(account.id);
+  }, [accounts, onUpdateAccounts]);
+
+  const handleDeleteAccount = useCallback(
+    (id) => {
+      const next = accounts.filter((a) => a.id !== id);
+      onUpdateAccounts(next);
+      if (activeId === id) {
+        setActiveId(next.length > 0 ? next[0].id : null);
+      }
+    },
+    [accounts, activeId, onUpdateAccounts],
+  );
+
+  const handleSave = useCallback(() => {
+    if (!editDraft) return;
+    const next = accounts.map((a) => (a.id === editDraft.id ? editDraft : a));
+    onUpdateAccounts(next);
+    setSavedFlag(Date.now());
+    setTimeout(() => setSavedFlag(null), 1500);
+  }, [editDraft, accounts, onUpdateAccounts]);
+
+  const handleTestWithConfig = useCallback(async () => {
+    if (!editDraft) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await window.electronAPI.testEmailSmtp({
+        accountId: editDraft.id,
+        tempAccount: {
+          smtpHost: editDraft.smtpHost,
+          smtpPort: editDraft.smtpPort,
+          smtpUser: editDraft.smtpUser,
+          smtpPass: editDraft.smtpPass,
+          useTls: editDraft.useTls,
+        },
+      });
+      setTestResult(result);
+    } catch (e) {
+      setTestResult({ ok: false, message: e.message });
+    } finally {
+      setTesting(false);
+    }
+  }, [editDraft]);
+
+  const handleCrawl = useCallback(() => {
+    if (!activeAccount) return;
+    onCrawlAccount(activeAccount.id);
+    onOpenEditor(activeAccount.id, []);
+  }, [activeAccount, onCrawlAccount, onOpenEditor]);
+
+  const addRecipient = useCallback(() => {
+    const email = recipientInput.trim();
+    if (!email || !email.includes('@')) return;
+    const current = editDraft?.recipients || [];
+    if (current.includes(email)) return;
+    updateDraft(
+      'recipients',
+      [...current, email],
+    );
+    setRecipientInput('');
+  }, [recipientInput, editDraft, updateDraft]);
+
+  const removeRecipient = useCallback(
+    (email) => {
+      const current = editDraft?.recipients || [];
+      updateDraft(
+        'recipients',
+        current.filter((r) => r !== email),
+      );
+    },
+    [editDraft, updateDraft],
+  );
+
+  const handleRecipientKey = useCallback(
+    (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        addRecipient();
+      }
+    },
+    [addRecipient],
+  );
+
+  if (!activeAccount && accounts.length === 0) {
+    return (
+      <div className="email-push-panel">
+        <div className="email-push-header">个人推送</div>
+        <div className="email-push-empty">
+          <p>暂无邮箱账户</p>
+          <button className="fetch-btn" onClick={handleAddAccount}>
+            + 添加邮箱
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="email-push-panel">
+      <div className="email-push-header">个人推送</div>
+
+      {/* Account Tabs */}
+      <div className="email-push-tabs">
+        {accounts.map((a) => (
+          <div
+            key={a.id}
+            className={`email-push-tab${a.id === activeId ? ' active' : ''}`}
+            onClick={() => handleSelectAccount(a.id)}
+          >
+            <span className="email-push-tab-name">{a.name || '未命名'}</span>
+            <button
+              className="email-push-tab-del"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDeleteAccount(a.id);
+              }}
+              title="删除"
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <button className="email-push-tab-add" onClick={handleAddAccount} title="添加邮箱">
+          +
+        </button>
+      </div>
+
+      {/* Account Editor */}
+      {editDraft && (
+        <div className="email-push-form">
+          {/* SMTP Settings */}
+          <details className="email-push-section" open>
+            <summary>邮箱设置</summary>
+            <label>
+              <span>发件名称</span>
+              <input
+                type="text"
+                value={editDraft.name}
+                onChange={(e) => updateDraft('name', e.target.value)}
+                placeholder="如：我的 Gmail"
+              />
+            </label>
+            <label>
+              <span>SMTP 服务器</span>
+              <input
+                type="text"
+                value={editDraft.smtpHost}
+                onChange={(e) => updateDraft('smtpHost', e.target.value)}
+                placeholder="smtp.gmail.com"
+              />
+            </label>
+            <label>
+              <span>端口</span>
+              <input
+                type="number"
+                value={editDraft.smtpPort}
+                onChange={(e) => updateDraft('smtpPort', parseInt(e.target.value, 10) || 587)}
+              />
+            </label>
+            <label>
+              <span>用户名</span>
+              <input
+                type="text"
+                value={editDraft.smtpUser}
+                onChange={(e) => updateDraft('smtpUser', e.target.value)}
+                placeholder="your-email@gmail.com"
+              />
+            </label>
+            <label>
+              <span>密码 / 应用专用密码</span>
+              <input
+                type="password"
+                value={editDraft.smtpPass}
+                onChange={(e) => updateDraft('smtpPass', e.target.value)}
+                placeholder="SMTP 密码"
+              />
+            </label>
+            <label className="email-push-checkbox-label">
+              <input
+                type="checkbox"
+                checked={editDraft.useTls}
+                onChange={(e) => updateDraft('useTls', e.target.checked)}
+              />
+              <span>使用 TLS</span>
+            </label>
+            <div className="email-push-test-row">
+              <button
+                className="push-btn push-btn-test"
+                onClick={handleTestWithConfig}
+                disabled={testing || !editDraft.smtpHost}
+              >
+                {testing ? '测试中...' : '测试连接'}
+              </button>
+              {testResult && (
+                <span className={`push-test-msg ${testResult.ok ? 'ok' : 'fail'}`}>
+                  {testResult.ok ? '✓ 成功' : `✗ ${testResult.message}`}
+                </span>
+              )}
+            </div>
+          </details>
+
+          {/* Crawl Settings */}
+          <details className="email-push-section">
+            <summary>爬取设置</summary>
+            <label>
+              <span>关键词</span>
+              <input
+                type="text"
+                value={editDraft.crawlConfig.keyword}
+                onChange={(e) => updateCrawl('keyword', e.target.value)}
+                placeholder="AI, LLM, agent"
+              />
+            </label>
+            <div className="config-inline-grid">
+              <label>
+                <span>最低 Stars</span>
+                <input
+                  type="number"
+                  value={editDraft.crawlConfig.minStars}
+                  onChange={(e) => updateCrawl('minStars', parseInt(e.target.value, 10) || 0)}
+                />
+              </label>
+              <label>
+                <span>最高 Stars（留空不限）</span>
+                <input
+                  type="text"
+                  value={editDraft.crawlConfig.maxStars}
+                  onChange={(e) => updateCrawl('maxStars', e.target.value)}
+                />
+              </label>
+              <label>
+                <span>最低 Forks</span>
+                <input
+                  type="text"
+                  value={editDraft.crawlConfig.minForks}
+                  onChange={(e) => updateCrawl('minForks', e.target.value)}
+                />
+              </label>
+              <label>
+                <span>最高 Forks</span>
+                <input
+                  type="text"
+                  value={editDraft.crawlConfig.maxForks}
+                  onChange={(e) => updateCrawl('maxForks', e.target.value)}
+                />
+              </label>
+              <label>
+                <span>开始日期</span>
+                <input
+                  type="date"
+                  value={editDraft.crawlConfig.startDate}
+                  onChange={(e) => updateCrawl('startDate', e.target.value)}
+                />
+              </label>
+              <label>
+                <span>结束日期</span>
+                <input
+                  type="date"
+                  value={editDraft.crawlConfig.endDate}
+                  onChange={(e) => updateCrawl('endDate', e.target.value)}
+                />
+              </label>
+              <label>
+                <span>爬取页数</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="10"
+                  value={editDraft.crawlConfig.maxPages}
+                  onChange={(e) => updateCrawl('maxPages', parseInt(e.target.value, 10) || 1)}
+                />
+              </label>
+            </div>
+          </details>
+
+          {/* Recipients */}
+          <details className="email-push-section" open>
+            <summary>收件人</summary>
+            <div className="email-push-recipients">
+              {(editDraft.recipients || []).map((email) => (
+                <span key={email} className="recipient-tag">
+                  {email}
+                  <button onClick={() => removeRecipient(email)}>×</button>
+                </span>
+              ))}
+            </div>
+            <div className="email-push-recipient-input">
+              <input
+                type="email"
+                value={recipientInput}
+                onChange={(e) => setRecipientInput(e.target.value)}
+                onKeyDown={handleRecipientKey}
+                placeholder="输入邮箱后按回车添加"
+              />
+              <button onClick={addRecipient}>添加</button>
+            </div>
+          </details>
+
+          {/* RSS Feed Settings */}
+          <details className="email-push-section">
+            <summary>RSS 订阅设置</summary>
+            <label className="email-push-checkbox-label">
+              <input
+                type="checkbox"
+                checked={editDraft.rssConfig?.enabled || false}
+                onChange={(e) => updateRss('enabled', e.target.checked)}
+              />
+              <span>启用 RSS 输出</span>
+            </label>
+            {(editDraft.rssConfig?.enabled) && (
+              <>
+                <label>
+                  <span>目标仓库</span>
+                  <input
+                    type="text"
+                    value={editDraft.rssConfig?.repo || ''}
+                    onChange={(e) => updateRss('repo', e.target.value)}
+                    placeholder="username/repo（如 wengisdove/wengisdove.github.io）"
+                  />
+                </label>
+                <div className="config-inline-grid">
+                  <label>
+                    <span>分支</span>
+                    <input
+                      type="text"
+                      value={editDraft.rssConfig?.branch || 'main'}
+                      onChange={(e) => updateRss('branch', e.target.value)}
+                      placeholder="main"
+                    />
+                  </label>
+                  <label>
+                    <span>文件路径</span>
+                    <input
+                      type="text"
+                      value={editDraft.rssConfig?.filePath || 'feed.xml'}
+                      onChange={(e) => updateRss('filePath', e.target.value)}
+                      placeholder="feed.xml"
+                    />
+                  </label>
+                </div>
+                <label>
+                  <span>Commit 信息</span>
+                  <input
+                    type="text"
+                    value={editDraft.rssConfig?.commitMessage || 'Update RSS feed'}
+                    onChange={(e) => updateRss('commitMessage', e.target.value)}
+                    placeholder="Update RSS feed"
+                  />
+                </label>
+                <label>
+                  <span>订阅标题</span>
+                  <input
+                    type="text"
+                    value={editDraft.rssConfig?.title || ''}
+                    onChange={(e) => updateRss('title', e.target.value)}
+                    placeholder={`GitHub Scout - ${editDraft.name || '未命名'}`}
+                  />
+                </label>
+                <label>
+                  <span>订阅描述</span>
+                  <input
+                    type="text"
+                    value={editDraft.rssConfig?.description || ''}
+                    onChange={(e) => updateRss('description', e.target.value)}
+                    placeholder="GitHub 热门仓库推送"
+                  />
+                </label>
+                <label>
+                  <span>订阅链接（RSS 中显示的网站链接）</span>
+                  <input
+                    type="text"
+                    value={editDraft.rssConfig?.link || ''}
+                    onChange={(e) => updateRss('link', e.target.value)}
+                    placeholder="https://github.com"
+                  />
+                </label>
+                <label>
+                  <span>自定义公开 URL（留空自动生成）</span>
+                  <input
+                    type="text"
+                    value={editDraft.rssConfig?.publicUrl || ''}
+                    onChange={(e) => updateRss('publicUrl', e.target.value)}
+                    placeholder={`自动：https://${(editDraft.rssConfig?.repo || 'owner/repo').split('/')[1] || 'repo'}/${editDraft.rssConfig?.filePath || 'feed.xml'}`}
+                  />
+                </label>
+              </>
+            )}
+          </details>
+
+          {/* Actions */}
+          <div className="email-push-actions">
+            <button className="push-btn push-btn-save" onClick={handleSave}>
+              {savedFlag ? '✓ 已保存' : '保存配置'}
+            </button>
+            <button
+              className="push-btn push-btn-crawl"
+              onClick={handleCrawl}
+              disabled={loading}
+            >
+              {loading && crawlingAccountId === activeAccount?.id ? '爬取中...' : '爬取仓库'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

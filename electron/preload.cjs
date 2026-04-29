@@ -23,6 +23,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveAiConfig: (config) => ipcRenderer.invoke('save-ai-config', config),
   loadAiConfig: () => ipcRenderer.invoke('load-ai-config'),
 
+  // Email push
+  loadEmailPushConfig: () => ipcRenderer.invoke('push-email-load-config'),
+  saveEmailPushConfig: (config) => ipcRenderer.invoke('push-email-save-config', config),
+  testEmailSmtp: (payload) => ipcRenderer.invoke('push-email-test-smtp', payload),
+  sendEmail: (payload) => ipcRenderer.invoke('push-email-send', payload),
+  crawlForEmail: (payload) => ipcRenderer.invoke('push-email-crawl', payload),
+  uploadRssFeed: (payload) => ipcRenderer.invoke('push-rss-upload', payload),
+
+  // Prompt editor
+  loadAllPrompts: () => ipcRenderer.invoke('load-all-prompts'),
+  savePrompt: (key, text) => ipcRenderer.invoke('save-prompt', key, text),
+  resetPrompt: (key) => ipcRenderer.invoke('reset-prompt', key),
+  getPromptHistory: (key) => ipcRenderer.invoke('get-prompt-history', key),
+  rollbackPrompt: (key, versionIndex) => ipcRenderer.invoke('rollback-prompt', key, versionIndex),
+
   onLogEntry: (callback) => {
     ipcRenderer.on('log-entry', (_, entry) => callback(entry));
   },

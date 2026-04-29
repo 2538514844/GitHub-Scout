@@ -30,7 +30,7 @@ npm run electron:build
 - **Electron** — main process, IPC handlers, native dialogs, window management
 - **React 19** — renderer in `src/`
 - **Vite 6** — bundler via `@vitejs/plugin-react`
-- **antd** — UI component library
+- **antd** — listed as devDependency but not currently imported (UI is custom CSS)
 
 ### Three-Layer Structure
 
@@ -39,14 +39,16 @@ npm run electron:build
 - Registers all IPC handlers — each handler delegates to a function in `electron/ipc.js`
 - Log distribution: `logEmitter` (EventEmitter) sends log entries to renderer via `webContents.send('log-entry', ...)`
 
-**2. Backend service layer** (`electron/ipc.js`, ~3700 lines)
+**2. Backend service layer** (`electron/ipc.js`, ~4050 lines)
 All backend logic lives here. Key modules when read top-to-bottom:
 - **Utility layer**: HTTP helpers (`httpsRequest`, `httpsGet`), JSON parsing, GitHub header builder
 - **AI parsing**: Structured output extraction from AI responses (`extractOpenAiCompatibleMessage`, `parseStructuredRepoTagMap`, `parseStructuredRepoTagMapFromJson`) with retry logic and model fallback (e.g. DeepSeek reasoner → chat for structured output)
 - **GitHub API**: Repo search (`fetchGitHub`, `handleFetchRepos`), README fetching (`fetchRepoReadme`, `handleFetchSelectedReadmes`), auth (device flow + PAT login)
 - **README carousel**: Full HTML slideshow generation pipeline. The AI system prompt template lives in `prompts/final_prompt.txt` (~900 lines). Pipeline: AI narration → TTS audio via MiniMax API → local image injection → carousel index building → video recording with screen capture (WebM) → ffmpeg transcode to MP4 (4K, x264 CRF 18, AAC 320k)
 - **AI analysis**: Multi-provider support (OpenAI-compatible as default, plus Anthropic route). Connection testing, repo batch analysis with progress reporting, structured tag/description output, history-aware analysis (reuses tags from similar past repos)
-- **Data persistence**: JSON files in `data/` — `settings.json` (AI config), `auth.json` (GitHub token), `repo_analysis.json` (analysis history)
+- **Email & RSS push**: Crawl repos via GitHub Search, auto-analyze with AI, then output via two channels from the same account config — (1) bulk-send curated repo lists as HTML email via SMTP (`nodemailer`), (2) auto-upload RSS 2.0 XML to a GitHub repo via the Contents API for RSS reader subscription. Supports per-account SMTP config, recipient management, RSS repo/branch/path config, crawl settings, and inline repo data editing before send/upload.
+- **Prompt overrides**: `resolvePrompt(key, default)` checks `data/prompts.json` for user overrides before falling back to hardcoded defaults. All 16 prompt registry entries use this. Template prompts store literal `${var}` placeholders substituted via `.replace()` at runtime. Each save creates a version history entry in `data/prompts-history.json`, supporting per-prompt rollback.
+- **Data persistence**: JSON files in `data/` — `settings.json` (AI config), `auth.json` (GitHub token), `repo_analysis.json` (analysis history), `email-push-config.json` (SMTP accounts, recipients, crawl settings), `prompts.json` (AI prompt overrides), `prompts-history.json` (version history per prompt key), `presentation-settings.json` (TTS config + playlist), `tts-cache/` (cached TTS audio), `readme-carousel-runs/` (generated carousel HTML sessions)
 - **Video transcode**: `main.js` includes a WebM→MP4 ffmpeg pipeline using `ffmpeg-static`. `electron-builder.json` has `asarUnpack` for `node_modules/ffmpeg-static/**/*` — ffmpeg can't run from within an asar archive
 
 **`electron/presentation.js`** (~650 lines) — Standalone TTS and slideshow manager:
@@ -72,6 +74,9 @@ All backend logic lives here. Key modules when read top-to-bottom:
 | `LogPanel.jsx` | Tabbed log viewer (fetch, analyze, auth, config logs) |
 | `PresentationStudio.jsx` | Presentation/TTS configuration and playlist editing UI |
 | `PresentationPlayerOverlay.jsx` | In-app player overlay for carousel preview |
+| `EmailPushPanel.jsx` | SMTP account + RSS feed management per account — SMTP settings, recipient list, RSS repo/branch/path config, crawl settings (keywords, date range, stars, pages) |
+| `EmailPushEditor.jsx` | Full-screen overlay for reviewing/editing crawled repos before output — checkbox selection, inline editing, "发送邮件" to SMTP recipients and "上传 RSS" to push to configured GitHub repo |
+| `PromptEditorPanel.jsx` | Visual editor for all AI prompt templates — browse by category, search, edit with monospace textarea, save/reset per prompt |
 | `hooks/useUiSwitchSound.js` | Custom hook managing an Audio element pool for UI switch sounds |
 
 ### IPC Bridge
@@ -87,6 +92,24 @@ All backend logic lives here. Key modules when read top-to-bottom:
 | `analyze-repos` | renderer → main | AI batch analysis |
 | `test-connection` | renderer → main | AI provider connectivity check |
 | `log-entry` | main → renderer | Real-time log streaming |
+
+**Email & RSS push**
+| Channel | Direction | Purpose |
+|---|---|---|
+| `push-email-load-config` / `push-email-save-config` | renderer ↔ main | Push config persistence (`data/email-push-config.json`) — contains both SMTP accounts and RSS settings |
+| `push-email-test-smtp` | renderer → main | Test SMTP connection (supports draft config) |
+| `push-email-crawl` | renderer → main | Crawl repos via GitHub Search, auto-analyze with AI, return repos with AI tags |
+| `push-email-send` | renderer → main | Send HTML email via SMTP (`nodemailer`) to configured recipients |
+| `push-rss-upload` | renderer → main | Generate RSS 2.0 XML and push to GitHub repo via Contents API (create or update file) |
+
+**Prompt editor**
+| Channel | Direction | Purpose |
+|---|---|---|
+| `load-all-prompts` | renderer → main | Returns all 16 prompt registry entries with current values and customization status |
+| `save-prompt` | renderer → main | Save a single prompt override by key to `data/prompts.json` (appends to version history in `data/prompts-history.json`) |
+| `reset-prompt` | renderer → main | Delete a single prompt override, reverting to hardcoded default |
+| `get-prompt-history` | renderer → main | Fetch version history for a prompt key |
+| `rollback-prompt` | renderer → main | Restore a prompt to a specific historical version |
 
 **Auth**
 | Channel | Direction | Purpose |
@@ -123,7 +146,16 @@ All backend logic lives here. Key modules when read top-to-bottom:
 5. AI provider auto-selection: fastest successful connection test wins
 6. Analysis results rendered in `AnalysisView` + persisted to `data/repo_analysis.json`
 
+### Email & RSS Push Data Flow
+1. User configures SMTP account(s), RSS feed settings (GitHub repo/branch/file path), crawl settings, and recipient list in `EmailPushPanel`
+2. Config persisted to `data/email-push-config.json` via `push-email-save-config`
+3. User triggers crawl → `push-email-crawl` → backend runs GitHub Search + AI analysis per account's crawl settings
+4. Results open in `EmailPushEditor` overlay for manual review/edit before output
+5a. **Email**: User clicks "发送邮件" → `push-email-send` → backend builds HTML email body (`buildEmailBody`) and sends via SMTP (`nodemailer`)
+5b. **RSS**: User clicks "上传 RSS" → `push-rss-upload` → backend generates RSS 2.0 XML (`buildRssXml`), fetches existing file SHA from GitHub, then PUTs via Contents API. Public URL auto-computed: `.github.io` repos → `https://{repo}/{filePath}`, others → raw URL.
+
 ### Important Design Details
+- Prompt resolution: `resolvePrompt(key, default)` in `ipc.js` loads overrides from `data/prompts.json` at startup. All hardcoded prompt constants use it. Template prompts store literal `${var}` placeholders substituted via `.replace()` at runtime. The `PromptEditorPanel` component provides the UI for editing all 16 prompts.
 - AI provider detection: URL containing "anthropic" or "claude" uses the Anthropic route; everything else uses OpenAI-compatible format
 - Structured AI output parsing has two passes: regex-based extraction from free text, then JSON extraction if available
 - `resolveAutoPickModel` replaces reasoner models with chat models for DeepSeek (reasoner doesn't support structured output well)
@@ -132,3 +164,7 @@ All backend logic lives here. Key modules when read top-to-bottom:
 - Recorder data flow: `MediaRecorder` API in `recorder-preload.cjs` captures screen as WebM → `save-recorded-video` handler in `main.js` transcodes to MP4 via `ffmpeg-static`. The `asarUnpack` in `electron-builder.json` is required because ffmpeg can't run from within an asar archive
 - `presentation-progress` is a main→renderer push channel (not an invoke), exposed via `onPresentationProgress` which returns an unsubscribe function
 - Carousel HTML pages (`prompts/final_prompt.txt`) are AI-generated, single-page, 1920×1080 fixed-viewport documents with TTS-driven local image slideshow logic
+- Font system: `index.html` preconnects to Google Fonts (Google Sans, Roboto, Noto Sans SC, Material Icons/Symbols). Carousel HTML uses base64-injected `htmlFont.ttf` from `data/fonts/` (also at `src/assets/htmlFont.ttf`) for offline rendering — the CSS font stack is `'Google Sans', 'Roboto', 'Noto Sans SC', 'htmlFont', system-ui, -apple-system, sans-serif`
+- Page turn sound: the carousel plays `mixkit-fast-double-click-on-mouse-275.wav` from the project root on slide transitions
+- RSS upload: `httpsRequest` accepts optional 4th arg `method` (defaults to `'POST'`, RSS uses `'PUT'`). `buildRssXml` generates RSS 2.0 XML with `escapeXml`/`toRfc822Date` helpers. `computeRssPublicUrl` auto-detects GitHub Pages vs raw URL from repo name. Upload requires GitHub PAT with `repo` scope — the existing auth token from `data/auth.json` is reused.
+- Each account in `email-push-config.json` can have both SMTP fields and an `rssConfig` object — both channels coexist in one config, and the editor shows both output buttons when RSS is enabled.

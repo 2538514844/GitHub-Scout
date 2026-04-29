@@ -4,6 +4,9 @@ import RepoTable from './components/RepoTable';
 import RepoImagePanel from './components/RepoImagePanel';
 import AnalysisView from './components/AnalysisView';
 import Auth from './components/Auth';
+import EmailPushPanel from './components/EmailPushPanel';
+import EmailPushEditor from './components/EmailPushEditor';
+import PromptEditorPanel from './components/PromptEditorPanel';
 import useUiSwitchSound from './hooks/useUiSwitchSound';
 
 function isReasoningModel(model = '') {
@@ -70,6 +73,19 @@ function App() {
   const [fetchingReadmes, setFetchingReadmes] = useState(false);
   const { soundEnabled, setSoundEnabled, playSwitchSound } = useUiSwitchSound();
 
+  // Prompt editor state
+  const [showPromptEditor, setShowPromptEditor] = useState(false);
+
+  // Email push state
+  const [showEmailPush, setShowEmailPush] = useState(false);
+  const [emailPushAccounts, setEmailPushAccounts] = useState([]);
+  const [emailPushRepos, setEmailPushRepos] = useState(null);
+  const [emailPushCrawling, setEmailPushCrawling] = useState(false);
+  const [emailPushCrawlingId, setEmailPushCrawlingId] = useState(null);
+  const [emailPushSending, setEmailPushSending] = useState(false);
+  const [emailPushUploadingRss, setEmailPushUploadingRss] = useState(false);
+  const [emailPushEditorAccount, setEmailPushEditorAccount] = useState(null);
+
   // Fetch filter state
   const [showFilter, setShowFilter] = useState(false);
   const today = new Date().toISOString().split('T')[0];
@@ -119,6 +135,14 @@ function App() {
       }
     };
     loadConfig();
+    loadEmailPush();
+  }, []);
+
+  const loadEmailPush = useCallback(async () => {
+    try {
+      const config = await window.electronAPI.loadEmailPushConfig();
+      if (config?.accounts) setEmailPushAccounts(config.accounts);
+    } catch { /* no config yet */ }
   }, []);
 
   useEffect(() => {
@@ -134,6 +158,8 @@ function App() {
         setAnalyzeLogs(prev => [...prev, entry]);
       } else if (entry.message.startsWith('[配置]') || entry.message.startsWith('[閰嶇疆]')) {
         setConfigLogs(prev => [...prev, entry]);
+      } else if (entry.message.startsWith('[个人推送]') || entry.message.startsWith('[個人推送]')) {
+        setFetchLogs(prev => [...prev, entry]);
       }
     });
   }, []);
@@ -487,6 +513,76 @@ function App() {
     }
   }, [handleUiNavigateSound]);
 
+  const handleEmailPushUpdateAccounts = useCallback(async (accounts) => {
+    setEmailPushAccounts(accounts);
+    await window.electronAPI.saveEmailPushConfig({ accounts });
+  }, []);
+
+  const handleEmailPushCrawl = useCallback(async (accountId) => {
+    setEmailPushCrawling(true);
+    setEmailPushCrawlingId(accountId);
+    try {
+      const result = await window.electronAPI.crawlForEmail({ accountId });
+      if (result.ok) {
+        setEmailPushRepos({ accountId, repos: result.repos });
+        const account = emailPushAccounts.find((a) => a.id === accountId);
+        setEmailPushEditorAccount(account);
+        const repoCount = result.repos ? result.repos.length : 0;
+        setFetchLogs((prev) => [
+          ...prev,
+          {
+            time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+            level: 'success',
+            message: `[个人推送] ${account?.name || accountId} 爬取完成，共 ${repoCount} 个仓库`,
+          },
+        ]);
+      }
+    } catch (err) {
+      console.error('Email push crawl failed:', err);
+    } finally {
+      setEmailPushCrawling(false);
+      setEmailPushCrawlingId(null);
+    }
+  }, [emailPushAccounts]);
+
+  const handleEmailPushOpenEditor = useCallback((accountId, repos) => {
+    const account = emailPushAccounts.find((a) => a.id === accountId);
+    setEmailPushEditorAccount(account);
+    if (repos && repos.length > 0) {
+      setEmailPushRepos({ accountId, repos });
+    }
+  }, [emailPushAccounts]);
+
+  const handleEmailPushCloseEditor = useCallback(() => {
+    setEmailPushEditorAccount(null);
+    setEmailPushRepos(null);
+  }, []);
+
+  const handleEmailPushSend = useCallback(async (accountId, repos) => {
+    setEmailPushSending(true);
+    try {
+      const result = await window.electronAPI.sendEmail({ accountId, repos });
+      return result;
+    } finally {
+      setEmailPushSending(false);
+    }
+  }, []);
+
+  const handleEmailPushUploadRss = useCallback(async (accountId, repos) => {
+    setEmailPushUploadingRss(true);
+    try {
+      const result = await window.electronAPI.uploadRssFeed({ accountId, repos });
+      return result;
+    } finally {
+      setEmailPushUploadingRss(false);
+    }
+  }, []);
+
+  const handleEmailPushToggle = () => {
+    handleUiNavigateSound('toggle');
+    setShowEmailPush((prev) => !prev);
+  };
+
   const handleFilterToggle = () => {
     handleUiNavigateSound('toggle');
     setShowFilter((prev) => !prev);
@@ -640,6 +736,27 @@ function App() {
           >
             {showConfig ? '收起' : 'AI 配置'}
           </button>
+          <button
+            className={`push-email-toggle-btn ${showEmailPush ? 'active' : ''}`}
+            onClick={handleEmailPushToggle}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M0 4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V4Zm2-1a1 1 0 0 0-1 1v.217l7 4.2 7-4.2V4a1 1 0 0 0-1-1H2Zm13 2.383-4.708 2.825L15 11.105V5.383Zm-.034 6.876-5.64-3.47L8 9.583l-1.326-.795-5.64 3.47A1 1 0 0 0 2 13h12a1 1 0 0 0 .966-.741ZM1 11.105l4.708-2.897L1 5.383v5.722Z"/>
+            </svg>
+            个人推送 {showEmailPush ? '▲' : '▼'}
+          </button>
+          <button
+            className={`prompt-editor-toggle-btn ${showPromptEditor ? 'active' : ''}`}
+            onClick={() => {
+              handleUiNavigateSound('toggle');
+              setShowPromptEditor((prev) => !prev);
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M12.854.146a.5.5 0 0 0-.707 0L10.5 1.793 14.207 5.5l1.647-1.646a.5.5 0 0 0 0-.708l-3-3zm.646 6.061L9.293 2H1.5A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h9a1.5 1.5 0 0 0 1.5-1.5V5.793l1.5-1.5v6.957a.5.5 0 1 0 1 0V3.5c0-.439-.146-.844-.396-1.176L13.5 4.561V3.354l-.146-.147zM11.5 12.5h-9a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5H8.293l1.5 1.5V5.5h2.207v6.5a.5.5 0 0 1-.5.5z"/>
+            </svg>
+            提示词 {showPromptEditor ? '▲' : '▼'}
+          </button>
         </div>
       </header>
 
@@ -759,6 +876,23 @@ function App() {
           />
         )}
 
+        {showEmailPush && (
+          <EmailPushPanel
+            accounts={emailPushAccounts}
+            onUpdateAccounts={handleEmailPushUpdateAccounts}
+            onCrawlAccount={handleEmailPushCrawl}
+            onOpenEditor={handleEmailPushOpenEditor}
+            crawlingAccountId={emailPushCrawlingId}
+            loading={emailPushCrawling}
+          />
+        )}
+
+        {showPromptEditor && (
+          <PromptEditorPanel
+            onClose={() => setShowPromptEditor(false)}
+          />
+        )}
+
         <div className="right-panel">
           <RepoTable
             repos={repos}
@@ -832,6 +966,18 @@ function App() {
           )}
         </div>
       </div>
+
+      {emailPushRepos && emailPushEditorAccount && (
+        <EmailPushEditor
+          account={emailPushEditorAccount}
+          repos={emailPushRepos.repos || []}
+          onClose={handleEmailPushCloseEditor}
+          onSend={handleEmailPushSend}
+          sending={emailPushSending}
+          onUploadRss={handleEmailPushUploadRss}
+          uploadingRss={emailPushUploadingRss}
+        />
+      )}
     </div>
   );
 }

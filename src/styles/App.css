@@ -1900,3 +1900,1015 @@ textarea {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-secondary);
 }
+
+/* ============================================
+   Email Push Panel
+   ============================================ */
+
+.email-push-panel {
+  width: 320px;
+  min-width: 320px;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.email-push-header {
+  padding: 14px 16px 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+  border-bottom: 1px solid var(--border);
+}
+
+.email-push-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.email-push-empty p {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+.email-push-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.email-push-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+
+.email-push-tab:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.email-push-tab.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.email-push-tab-name {
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.email-push-tab-del {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  opacity: 0.5;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.email-push-tab-del:hover {
+  opacity: 1;
+}
+
+.email-push-tab-add {
+  background: none;
+  border: 1px dashed var(--border);
+  color: var(--text-secondary);
+  font-size: 16px;
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.email-push-tab-add:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Email Push Form */
+.email-push-form {
+  padding: 8px 12px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.email-push-section {
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.email-push-section summary {
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.email-push-section label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.email-push-section label > span {
+  font-size: 11px;
+}
+
+.email-push-section input[type="text"],
+.email-push-section input[type="password"],
+.email-push-section input[type="number"],
+.email-push-section input[type="date"],
+.email-push-section input[type="email"] {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.email-push-section input:focus {
+  border-color: var(--accent);
+}
+
+.email-push-checkbox-label {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 6px !important;
+  padding: 6px 12px !important;
+}
+
+.email-push-checkbox-label input[type="checkbox"] {
+  margin: 0;
+}
+
+.email-push-test-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 10px;
+}
+
+.push-test-msg {
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.push-test-msg.ok {
+  color: var(--accent-green);
+}
+
+.push-test-msg.fail {
+  color: var(--accent-red);
+}
+
+.push-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: pointer;
+  background: var(--bg-tertiary);
+  color: var(--text);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.push-btn:hover {
+  background: var(--bg);
+  border-color: var(--accent);
+}
+
+.push-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.push-btn-test {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.push-btn-save {
+  background: var(--accent-green);
+  border-color: var(--accent-green);
+  color: #fff;
+  flex: 1;
+}
+
+.push-btn-save:hover {
+  background: #2ea043;
+}
+
+.push-btn-crawl {
+  background: var(--accent-purple);
+  border-color: var(--accent-purple);
+  color: #fff;
+  flex: 1;
+}
+
+.push-btn-crawl:hover {
+  background: #9b6eff;
+}
+
+.push-btn-close {
+  border-color: var(--accent-red);
+  color: var(--accent-red);
+}
+
+.push-btn-sm {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.push-btn-send {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  padding: 7px 20px;
+}
+
+.push-btn-send:hover {
+  background: #4c9ae6;
+}
+
+.push-btn-rss {
+  background: #e67e22;
+  border-color: #e67e22;
+  color: #fff;
+  font-size: 13px;
+  padding: 7px 20px;
+}
+
+.push-btn-rss:hover {
+  background: #d35400;
+}
+
+/* Recipients */
+.email-push-recipients {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 12px;
+}
+
+.recipient-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.recipient-tag button {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.recipient-tag button:hover {
+  opacity: 1;
+}
+
+.email-push-recipient-input {
+  display: flex;
+  gap: 4px;
+  padding: 4px 12px 10px;
+}
+
+.email-push-recipient-input input {
+  flex: 1;
+}
+
+.email-push-recipient-input button {
+  padding: 5px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.email-push-recipient-input button:hover {
+  border-color: var(--accent);
+}
+
+/* Actions */
+.email-push-actions {
+  display: flex;
+  gap: 8px;
+  padding: 10px 0;
+}
+
+/* Toggle button in header */
+.push-email-toggle-btn {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--bg-tertiary);
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: background 0.15s;
+}
+
+.push-email-toggle-btn:hover {
+  background: var(--bg);
+}
+
+.push-email-toggle-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ============================================
+   Email Push Editor (Overlay)
+   ============================================ */
+
+.email-push-editor-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: section-reveal 0.2s ease;
+}
+
+.email-push-editor {
+  width: 95vw;
+  max-width: 1200px;
+  height: 85vh;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.email-push-editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.email-push-editor-title h3 {
+  margin: 0 0 2px;
+  font-size: 16px;
+  color: var(--accent);
+}
+
+.email-push-editor-count {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.email-push-editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.email-push-editor-table-wrap {
+  flex: 1;
+  overflow: auto;
+  padding: 0;
+}
+
+.email-push-editor-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.email-push-editor-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.email-push-editor-table th {
+  background: var(--bg-secondary);
+  padding: 8px 10px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.email-push-editor-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+
+.email-push-editor-table tr.unchecked td {
+  opacity: 0.4;
+}
+
+.email-push-editor-table tr.editing td {
+  background: var(--bg-tertiary);
+}
+
+.email-push-editor-table tr:hover td {
+  background: var(--bg-secondary);
+}
+
+.email-push-editor-table td.repo-name a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.email-push-editor-table td.repo-name a:hover {
+  text-decoration: underline;
+}
+
+.email-push-editor-table td.repo-desc {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.push-edit-input {
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  padding: 3px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  outline: none;
+}
+
+.push-edit-num {
+  width: 60px;
+}
+
+.push-edit-actions {
+  display: flex;
+  gap: 4px;
+}
+
+/* Editor Footer */
+.email-push-editor-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.email-push-editor-status {
+  font-size: 12px;
+}
+
+.push-send-results {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.email-push-editor-buttons {
+  display: flex;
+  align-items: center;
+}
+
+/* Config inline grid (reused from ConfigPanel) */
+.email-push-section .config-inline-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  padding: 0;
+}
+
+/* AI Tags in editor */
+.push-tags-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-top: 3px;
+}
+
+.push-tag-badge {
+  display: inline-block;
+  background: var(--bg-tertiary);
+  color: var(--accent);
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+
+/* Prompt Editor Panel */
+.prompt-editor-panel {
+  width: 380px;
+  min-width: 380px;
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: hidden;
+  animation: section-reveal 0.18s ease;
+}
+
+.prompt-editor-header {
+  padding: 14px 16px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+
+.prompt-editor-header h3 {
+  font-size: 14px;
+  color: var(--accent);
+  margin: 0;
+  font-weight: 600;
+}
+
+.prompt-search {
+  margin: 10px 12px 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+
+.prompt-search:focus {
+  border-color: var(--accent);
+}
+
+.prompt-search::placeholder {
+  color: var(--text-secondary);
+}
+
+.prompt-list {
+  flex: 0 0 auto;
+  max-height: 200px;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border);
+}
+
+.prompt-category-group {
+  padding: 0;
+}
+
+.prompt-category-label {
+  padding: 6px 16px 3px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: var(--bg);
+  border-bottom: 1px solid rgba(48, 54, 61, 0.4);
+}
+
+.prompt-list-item {
+  padding: 7px 16px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid rgba(48, 54, 61, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  transition: background 0.12s;
+}
+
+.prompt-list-item:hover {
+  background: var(--bg-tertiary);
+  color: var(--text);
+}
+
+.prompt-list-item.active {
+  background: rgba(88, 166, 255, 0.08);
+  color: var(--accent);
+  border-left: 3px solid var(--accent);
+}
+
+.prompt-list-item.customized {
+  /* dot added via badge */
+}
+
+.prompt-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-item-badges {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.prompt-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.prompt-badge.customized {
+  background: rgba(63, 185, 80, 0.12);
+  color: var(--accent-green);
+}
+
+.prompt-badge.template {
+  background: rgba(188, 140, 255, 0.12);
+  color: var(--accent-purple);
+}
+
+.prompt-list-empty {
+  padding: 12px 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.prompt-editor-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 10px 12px;
+  gap: 8px;
+}
+
+.prompt-editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.prompt-editor-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.prompt-editor-key {
+  font-size: 11px;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  color: var(--text-secondary);
+  background: var(--bg);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.prompt-textarea {
+  flex: 1;
+  width: 100%;
+  min-height: 200px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: none;
+  overflow-y: auto;
+  tab-size: 2;
+}
+
+.prompt-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.prompt-template-vars {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 6px 8px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.prompt-template-vars code {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(88, 166, 255, 0.12);
+  color: var(--accent);
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+}
+
+.prompt-status {
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.prompt-status.success {
+  color: var(--accent-green);
+}
+
+.prompt-status.error {
+  color: var(--accent-red);
+}
+
+.prompt-editor-placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 20px;
+}
+
+/* Prompt editor toggle button */
+.prompt-editor-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.prompt-editor-toggle-btn:hover {
+  color: var(--accent-purple);
+  border-color: rgba(188, 140, 255, 0.4);
+}
+
+.prompt-editor-toggle-btn.active {
+  color: var(--accent-purple);
+  border-color: rgba(188, 140, 255, 0.5);
+  background: rgba(188, 140, 255, 0.08);
+}
+
+/* Reuse save-btn and reset-btn styles */
+.prompt-editor-area .save-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  padding: 5px 14px;
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.prompt-editor-area .save-btn:hover {
+  opacity: 0.85;
+}
+
+.prompt-editor-area .save-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.prompt-editor-area .reset-btn {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.prompt-editor-area .reset-btn:hover {
+  color: var(--accent-orange);
+  border-color: var(--accent-orange);
+}
+
+/* History button */
+.prompt-editor-area .history-btn {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  margin-left: auto;
+}
+
+.prompt-editor-area .history-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.prompt-editor-area .history-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Rollback status message */
+.prompt-rollback-msg {
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+}
+
+.prompt-rollback-msg.success {
+  color: var(--accent-green);
+}
+
+.prompt-rollback-msg.error {
+  color: var(--accent-red);
+}
+
+/* History panel */
+.prompt-history-panel {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.prompt-history-header {
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+
+.prompt-history-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+  line-height: 1;
+  opacity: 0.5;
+}
+
+.prompt-history-close:hover {
+  opacity: 1;
+}
+
+.prompt-history-empty {
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.prompt-history-list {
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.prompt-history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 11px;
+  border-bottom: 1px solid rgba(48, 54, 61, 0.3);
+  transition: background 0.12s;
+}
+
+.prompt-history-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.prompt-history-item.selected {
+  background: rgba(88, 166, 255, 0.08);
+  border-left: 3px solid var(--accent);
+}
+
+.prompt-history-version {
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-tertiary);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.prompt-history-time {
+  font-size: 10px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.prompt-history-preview {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 10px;
+}
+
+/* History preview panel */
+.prompt-history-preview-panel {
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.prompt-history-preview-header {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--accent);
+  background: rgba(88, 166, 255, 0.06);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid rgba(88, 166, 255, 0.15);
+}
+
+.prompt-history-preview-textarea {
+  flex: 1;
+  border: none !important;
+  border-radius: 0 !important;
+  background: var(--bg) !important;
+  color: var(--text-secondary) !important;
+  min-height: 120px;
+  max-height: 200px;
+  cursor: default;
+}

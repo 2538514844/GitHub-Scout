@@ -20,6 +20,17 @@ const {
   handleLogout,
   handleSaveAiConfig,
   handleLoadAiConfig,
+  handleLoadEmailPushConfig,
+  handleSaveEmailPushConfig,
+  handleEmailPushTestSmtp,
+  handleEmailPushSend,
+  handleEmailPushCrawl,
+  handlePushRssUpload,
+  handleLoadAllPrompts,
+  handleSavePrompt,
+  handleResetPrompt,
+  handleGetPromptHistory,
+  handleRollbackPrompt,
   logEmitter,
 } = require('./ipc');
 const {
@@ -422,6 +433,19 @@ app.whenReady().then(() => {
   ipcMain.handle('analyze-repos', async (_, data) => handleAnalyzeWithAI(data.aiConfig, data.repos, mainWindow));
   ipcMain.handle('fetch-selected-readmes', async (_, payload) => handleFetchSelectedReadmes(payload));
   ipcMain.handle('test-connection', async (_, aiConfig) => handleTestConnection(aiConfig));
+
+  ipcMain.handle('push-email-load-config', () => handleLoadEmailPushConfig());
+  ipcMain.handle('push-email-save-config', (_, config) => handleSaveEmailPushConfig(config));
+  ipcMain.handle('push-email-test-smtp', (_, payload) => handleEmailPushTestSmtp(payload));
+  ipcMain.handle('push-email-send', (_, payload) => handleEmailPushSend(payload));
+  ipcMain.handle('push-email-crawl', (_, payload) => handleEmailPushCrawl(payload, mainWindow));
+  ipcMain.handle('push-rss-upload', (_, payload) => handlePushRssUpload(payload));
+
+  ipcMain.handle('load-all-prompts', () => handleLoadAllPrompts());
+  ipcMain.handle('save-prompt', (_, key, text) => handleSavePrompt(key, text));
+  ipcMain.handle('reset-prompt', (_, key) => handleResetPrompt(key));
+  ipcMain.handle('get-prompt-history', (_, key) => handleGetPromptHistory(key));
+  ipcMain.handle('rollback-prompt', (_, key, versionIndex) => handleRollbackPrompt(key, versionIndex));
 
   logEmitter.on('log', (entry) => {
     if (mainWindow && !mainWindow.isDestroyed()) {

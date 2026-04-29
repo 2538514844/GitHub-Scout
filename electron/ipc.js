@@ -34,6 +34,202 @@ function log(message, level = 'info') {
   return entry;
 }
 
+const PROMPTS_OVERRIDE_FILE = path.join(DATA_DIR, 'prompts.json');
+const PROMPTS_HISTORY_FILE = path.join(DATA_DIR, 'prompts-history.json');
+
+let promptOverrides = {};
+try {
+  if (fs.existsSync(PROMPTS_OVERRIDE_FILE)) {
+    promptOverrides = JSON.parse(fs.readFileSync(PROMPTS_OVERRIDE_FILE, 'utf-8')) || {};
+  }
+} catch { /* ignore corrupt overrides */ }
+
+let promptHistory = {};
+try {
+  if (fs.existsSync(PROMPTS_HISTORY_FILE)) {
+    promptHistory = JSON.parse(fs.readFileSync(PROMPTS_HISTORY_FILE, 'utf-8')) || {};
+  }
+} catch { /* ignore corrupt history */ }
+
+function savePromptHistory() {
+  fs.writeFileSync(PROMPTS_HISTORY_FILE, JSON.stringify(promptHistory, null, 2));
+}
+
+function savePromptOverrides() {
+  fs.writeFileSync(PROMPTS_OVERRIDE_FILE, JSON.stringify(promptOverrides, null, 2));
+}
+
+function resolvePrompt(key, defaultValue) {
+  if (promptOverrides[key] && String(promptOverrides[key]).trim()) {
+    return String(promptOverrides[key]).trim();
+  }
+  return String(defaultValue || '').trim();
+}
+
+function getPromptRegistry() {
+  const readmeHtmlOutputWrapperDefault = `### 输出包裹规则（强制）
+* 最终完整 HTML 必须放在一个三单引号代码块中。
+* 优先使用以下格式：
+'''html
+<!DOCTYPE html>
+...
+'''
+* 代码块外不要输出与 HTML 无关的大段说明。
+* 程序只会提取三单引号代码块内部内容。`;
+
+  return [
+    {
+      key: 'readmeHtmlSystemPrompt',
+      name: 'README HTML 系统提示词',
+      category: 'README HTML',
+      isTemplate: false,
+      templateVars: [],
+      defaultText: '',
+      filePath: 'prompts/final_prompt.txt',
+    },
+    {
+      key: 'readmeHtmlOutputWrapper',
+      name: 'README HTML 输出包裹规则',
+      category: 'README HTML',
+      isTemplate: false,
+      templateVars: [],
+      defaultText: readmeHtmlOutputWrapperDefault,
+      filePath: null,
+    },
+    {
+      key: 'readmeHtmlUserPrompt',
+      name: 'README HTML 用户提示词',
+      category: 'README HTML',
+      isTemplate: true,
+      templateVars: ['repo.name', 'repoUrl', 'readmeResult.path', 'readmeResult.content'],
+      defaultText: '请基于以下 GitHub 仓库 README 生成完整 HTML。\n仓库名：\${repo.name}\n仓库链接：\${repoUrl}\nREADME 文件：\${readmeResult.path}\n\nREADME 内容：\n\${readmeResult.content}',
+      filePath: null,
+    },
+    {
+      key: 'readmeHtmlRetryUserPrompt',
+      name: 'README HTML 重试提示词',
+      category: 'README HTML',
+      isTemplate: true,
+      templateVars: ['baseUserPrompt', 'errorLine', 'previewLine'],
+      defaultText: '\${baseUserPrompt}\n\n上一次返回未通过程序提取，请重新生成一次完整 HTML。\n\${errorLine}\n\${previewLine}\n\n强制要求：\n1. 只输出一个代码块，不要输出解释、说明、前言或结尾。\n2. 优先使用三单引号代码块，格式必须是：\n\'\'\'html\n<!DOCTYPE html>\n...\n\'\'\'\n3. 如果你没有使用三单引号，至少也要直接输出完整 HTML 文档本体，不要夹杂任何额外文字。\n4. HTML 必须完整，包含 <!DOCTYPE html>。',
+      filePath: null,
+    },
+    {
+      key: 'readmeNarrationUserPrompt',
+      name: '解说词用户提示词',
+      category: 'Narration',
+      isTemplate: true,
+      templateVars: ['repo.name', 'repo.url', 'htmlContent'],
+      defaultText: '你是一位专业的中文讲解文案助手。请基于以下 GitHub 仓库信息与最终展示 HTML，生成一段用于 TTS 配音的中文解说词。\n\n要求：\n1. 只输出解说词正文，不要标题、项目符号、引号、括号说明、Markdown、代码块。\n2. 使用自然、流畅、口语化的中文，适合直接朗读。\n3. 长度控制在 20 到 50 字之间。\n4. 聚焦仓库的定位、亮点、技术特征和使用价值。\n5. 不要提及"HTML""卡片""README""代码块""页面将展示"等生成过程描述。\n\n仓库名：\${repo.name}\n仓库链接：\${repo.url}\n\n最终 HTML：\n\${htmlContent}',
+      filePath: null,
+    },
+    {
+      key: 'narrationSystemPrompt',
+      name: '解说词系统提示词',
+      category: 'Narration',
+      isTemplate: false,
+      templateVars: [],
+      defaultText: '你是一位专业的中文讲解文案助手，只输出适合直接朗读的中文解说词正文。',
+      filePath: null,
+    },
+    {
+      key: 'tagAnalysisPrompt',
+      name: '标签分析提示词',
+      category: 'Analysis',
+      isTemplate: false,
+      templateVars: [],
+      defaultText: '你是一个GitHub项目分析专家。请分析以下仓库，对每个仓库：\n1. 生成1-3个标签（技术领域/用途/特点）\n2. 用一句话描述它的核心内容\n\n重要规则：\n- 【不要误判】如果仓库有 Forks（Forks > 0），说明有其他开发者在使用，这是一个有意义的信号，请不要标记为"无意义"——即使描述为空也要根据名称关键词推断用途\n- 只有同时满足以下条件时才标记为"无意义"：仓库名形如"随机用户名/star-十六进制"（如 SomeRandomUser/star-4833d8），或名称是明显随机拼接的单词，且 Forks 为 0\n- 对于正常仓库，即使描述为空，也请根据名称中的技术关键词（如 react、vue、compiler、engine 等）推断用途\n\n标签规范化（必须遵守）：\n- 语言标签统一使用标准名称：JavaScript/TypeScript/Python/Java/Go/C++/C#/Rust/Ruby/Swift/Kotlin/Shell/PHP/C/R\n- 框架/库标签统一：React/Vue/Angular/Svelte/Next.js/Nuxt/Node.js/Express/Django/Flask/FastAPI/Spring/.NET\n- 不要使用变体或缩写（如不要写 JS/Javascript/JSX，统一写 JavaScript）\n- 用途标签统一：UI框架/后端/前端/数据库/DevOps/CLI工具/API/机器学习/数据可视化/游戏/自动化/安全\n- 同类标签必须合并，不要拆分（如 "AI" 和 "人工智能" 统一写 "AI"，"ML" 和 "机器学习" 统一写 "机器学习"）\n\n输出约束（必须严格遵守）：\n- 每个仓库只输出一行，不要输出标题、解释、备注、代码块或额外说明\n- 每行严格使用半角竖线 "|" 作为分隔符，严格使用半角逗号 "," 分隔多个标签\n- 标签只能包含中文、英文字母、数字，以及 "+"、"#"、"."、"-"，不要包含 emoji、引号、括号、斜杠、反斜杠、冒号、分号、星号或任何不可见字符\n- 标签不要带序号、项目符号或前后空格，不要使用全角标点\n- 如果不确定，请优先使用上面列出的标准标签，不要自造奇怪标签\n\n格式要求：每个仓库一行，格式为：仓库名|标签1,标签2,标签3|一句话描述\n例如：facebook/react|JavaScript,UI框架,前端|React是一个用于构建用户界面的声明式JavaScript库\n例如：SomeRandomUser/star-4833d8|无意义|该仓库无意义\n\n请简洁回答，使用中文。',
+      filePath: null,
+    },
+    {
+      key: 'descSupplementPrompt',
+      name: '描述补全提示词',
+      category: 'Analysis',
+      isTemplate: false,
+      templateVars: [],
+      defaultText: '以下是几个信息不足的GitHub仓库，以及可能相关的历史仓库描述作为参考。请为每个仓库提供1-3个标签和一句话描述。\n\n格式：仓库名|标签1,标签2|一句话描述\n\n判断规则：\n- 如果仓库有 Forks（Forks > 0），说明有实际用户在用，请不要标记为"无意义"，根据名称关键词推断用途\n- 只有仓库名形如"随机用户名/star-十六进制"且 Forks 为 0 时，才标记为"无意义"\n- 请根据名称中的技术关键词和历史参考信息进行推断\n\n标签规范化：\n- 语言统一：JavaScript/TypeScript/Python/Go/Rust/Java/C++/C#/Swift/Kotlin 等标准名称\n- AI/人工智能统一写 AI，ML/机器学习统一写 机器学习，LLM/大语言模型统一写 大模型\n- 同类标签必须合并，不要拆分（如 "UI框架" 和 "前端框架" 统一写 "UI框架"）\n\n输出约束（必须严格遵守）：\n- 每个仓库只输出一行，不要输出标题、解释、备注、代码块或额外说明\n- 每行严格使用半角竖线 "|" 作为分隔符，严格使用半角逗号 "," 分隔多个标签\n- 标签只能包含中文、英文字母、数字，以及 "+"、"#"、"."、"-"，不要包含 emoji、引号、括号、斜杠、反斜杠、冒号、分号、星号或任何不可见字符\n- 标签不要带序号、项目符号或前后空格，不要使用全角标点\n- 如果不确定，请优先使用标准标签，不要自造奇怪标签\n\n请简洁回答，使用中文。',
+      filePath: null,
+    },
+    {
+      key: 'currentSummaryPrompt',
+      name: '当前总结提示词',
+      category: 'Analysis',
+      isTemplate: false,
+      templateVars: [],
+      defaultText: '你是一个GitHub趋势分析专家。以下是本次爬取的全部仓库数据（含标签、描述、stars、forks、更新时间）。\n\n请从以下角度总结：\n## 标签分布趋势\n- 出现频率最高的热门标签\n- 主要技术领域占比\n\n## 语言分布\n- 各语言占比和特点\n\n## 最有潜力项目\n- 综合推荐前5个并说明理由\n\n## 整体趋势判断\n- 新兴方向和值得关注的点\n\n请简洁回答，使用中文。',
+      filePath: null,
+    },
+    {
+      key: 'trendSummaryPrompt',
+      name: '趋势总结提示词',
+      category: 'Analysis',
+      isTemplate: true,
+      templateVars: ['topTags'],
+      defaultText: '你是一个GitHub趋势分析专家。以下包含两部分数据：\n\n【当前批次】本次爬取的仓库（含标签、描述、stars、forks、更新时间）\n【历史匹配】从历史数据中找到的、与当前热门标签匹配的旧仓库\n\n热门标签：\${topTags}\n\n请从以下角度总结：\n## 趋势对比\n- 当前批次与历史仓库在相同领域的变化\n- 哪些方向热度上升/下降\n\n## 时间线分析\n- 按更新时间排序，观察项目演进趋势\n\n## 跨期最有潜力项目\n- 综合当前和历史数据，推荐最值得关注的5个项目\n\n## 整体趋势判断\n- 基于时间跨度的新兴方向预测\n\n请简洁回答，使用中文。',
+      filePath: null,
+    },
+    {
+      key: 'forceChineseOutputInstruction',
+      name: '强制中文输出指令',
+      category: 'Constraints',
+      isTemplate: false,
+      templateVars: [],
+      defaultText: '无论如何都要输出中文。即使输入内容、仓库名、标签、引用材料或上下文中包含英文，也不要改用英文回答。',
+      filePath: null,
+    },
+    {
+      key: 'structuredOutputGuard',
+      name: '结构化输出约束',
+      category: 'Constraints',
+      isTemplate: false,
+      templateVars: [],
+      defaultText: [
+        'Structured output only.',
+        'Do not output thinking, reasoning, explanations, markdown, code fences, XML, or <think> tags.',
+        'Do not output any prose before or after the structured data.',
+        'If line format is requested, return exactly one repo per line: owner/repo|tag1,tag2|description.',
+      ].join('\n'),
+      filePath: null,
+    },
+    {
+      key: 'structuredOutputRetryPrompt',
+      name: '结构化输出重试提示词',
+      category: 'Constraints',
+      isTemplate: true,
+      templateVars: ['systemPromptText', 'expectedRepoNamesLine'],
+      defaultText: '\${systemPromptText}\n\nRetry mode: return valid JSON only.\nNo prose, no markdown, no code fences, no <think> tags.\nUse this exact schema:\n{"items":[{"name":"owner/repo","tags":["tag1","tag2"],"description":"一句中文描述"}]}\n\${expectedRepoNamesLine}',
+      filePath: null,
+    },
+    {
+      key: 'briefingWelcomeText',
+      name: '早报欢迎语',
+      category: 'Briefing',
+      isTemplate: true,
+      templateVars: ['month', 'day', 'weekday'],
+      defaultText: '你好，今天是${month}月${day}日${weekday}，欢迎收看GitHub早报。',
+      filePath: null,
+    },
+    {
+      key: 'briefingOutroText',
+      name: '早报结束语',
+      category: 'Briefing',
+      isTemplate: false,
+      templateVars: [],
+      defaultText: '今天的GitHub早报到此为止，欢迎下次收看',
+      filePath: null,
+    },
+    {
+      key: 'userSystemPrompt',
+      name: '用户系统提示词',
+      category: 'User',
+      isTemplate: false,
+      templateVars: [],
+      defaultText: '',
+      filePath: null,
+    },
+  ];
+}
+
 function loadSettings() {
   try {
     return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
@@ -84,14 +280,14 @@ function readResponseText(res) {
   });
 }
 
-function httpsRequest(url, options, body) {
+function httpsRequest(url, options, body, method = 'POST') {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
     const req = https.request({
       hostname: urlObj.hostname,
       port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
       path: urlObj.pathname + urlObj.search,
-      method: 'POST',
+      method,
       headers: options.headers,
     }, async (res) => {
       try {
@@ -625,18 +821,21 @@ function ensureDir(dirPath) {
 }
 
 function loadReadmeHtmlPrompt() {
-  if (!fs.existsSync(PROMPT_FILE)) {
-    throw new Error(`提示词文件不存在: ${PROMPT_FILE}`);
+  let fileContent = '';
+  if (fs.existsSync(PROMPT_FILE)) {
+    fileContent = fs.readFileSync(PROMPT_FILE, 'utf8').trim();
+  }
+  if (!resolvePrompt('readmeHtmlSystemPrompt', fileContent) && !fileContent) {
+    throw new Error(`提示词文件不存在或为空: ${PROMPT_FILE}`);
   }
 
-  const promptText = fs.readFileSync(PROMPT_FILE, 'utf8').trim();
+  const promptText = resolvePrompt('readmeHtmlSystemPrompt', fileContent);
   if (!promptText) {
     throw new Error(`提示词文件为空: ${PROMPT_FILE}`);
   }
 
-  return `${promptText}
-
-### 输出包裹规则（强制）
+  const outputWrapper = resolvePrompt('readmeHtmlOutputWrapper',
+    `### 输出包裹规则（强制）
 * 最终完整 HTML 必须放在一个三单引号代码块中。
 * 优先使用以下格式：
 '''html
@@ -644,7 +843,9 @@ function loadReadmeHtmlPrompt() {
 ...
 '''
 * 代码块外不要输出与 HTML 无关的大段说明。
-* 程序只会提取三单引号代码块内部内容。`;
+* 程序只会提取三单引号代码块内部内容。`);
+
+  return `${promptText}\n\n${outputWrapper}`;
 }
 
 function extractHtmlFromAiResponse(content) {
@@ -967,20 +1168,25 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 function buildReadmeNarrationPrompt(repo, htmlContent) {
-  return `你是一位专业的中文讲解文案助手。请基于以下 GitHub 仓库信息与最终展示 HTML，生成一段用于 TTS 配音的中文解说词。
+  const template = resolvePrompt('readmeNarrationUserPrompt',
+    `你是一位专业的中文讲解文案助手。请基于以下 GitHub 仓库信息与最终展示 HTML，生成一段用于 TTS 配音的中文解说词。
 
 要求：
 1. 只输出解说词正文，不要标题、项目符号、引号、括号说明、Markdown、代码块。
 2. 使用自然、流畅、口语化的中文，适合直接朗读。
 3. 长度控制在 20 到 50 字之间。
 4. 聚焦仓库的定位、亮点、技术特征和使用价值。
-5. 不要提及“HTML”“卡片”“README”“代码块”“页面将展示”等生成过程描述。
+5. 不要提及”HTML””卡片””README””代码块””页面将展示”等生成过程描述。
 
-仓库名：${repo.name}
-仓库链接：${repo.url || `https://github.com/${repo.name}`}
+仓库名：\${repo.name}
+仓库链接：\${repo.url}
 
 最终 HTML：
-${htmlContent}`;
+\${htmlContent}`);
+  return template
+    .replace(/\$\{repo\.name\}/g, repo.name)
+    .replace(/\$\{repo\.url\}/g, repo.url || `https://github.com/${repo.name}`)
+    .replace(/\$\{htmlContent\}/g, htmlContent);
 }
 
 function escapeHtml(value) {
@@ -993,7 +1199,7 @@ function escapeHtml(value) {
 }
 
 const GITHUB_BRIEFING_TIME_ZONE = 'Asia/Shanghai';
-const GITHUB_BRIEFING_OUTRO_TEXT = '今天的GitHub早报到此为止，欢迎下次收看';
+const GITHUB_BRIEFING_OUTRO_TEXT = resolvePrompt('briefingOutroText', '今天的GitHub早报到此为止，欢迎下次收看');
 
 function getGitHubBriefingDateParts(date = new Date()) {
   const parts = new Intl.DateTimeFormat('zh-CN', {
@@ -1014,7 +1220,12 @@ function getGitHubBriefingDateParts(date = new Date()) {
 
 function buildGitHubBriefingWelcomeText(date = new Date()) {
   const { month, day, weekday } = getGitHubBriefingDateParts(date);
-  return `你好，今天是${month}月${day}日${weekday}，欢迎收看GitHub早报。`;
+  const template = resolvePrompt('briefingWelcomeText',
+    '你好，今天是\${month}月\${day}日\${weekday}，欢迎收看GitHub早报。');
+  return template
+    .replace(/\$\{month\}/g, month)
+    .replace(/\$\{day\}/g, day)
+    .replace(/\$\{weekday\}/g, weekday);
 }
 
 function buildGitHubBriefingDateLabel(date = new Date()) {
@@ -2322,13 +2533,13 @@ async function handleFetchSelectedReadmes(repos = []) {
 */
 
 function buildReadmeHtmlUserPrompt(repo, repoUrl, readmeResult) {
-  return `请基于以下 GitHub 仓库 README 生成完整 HTML。
-仓库名：${repo.name}
-仓库链接：${repoUrl}
-README 文件：${readmeResult.path}
-
-README 内容：
-${readmeResult.content}`;
+  const template = resolvePrompt('readmeHtmlUserPrompt',
+    '请基于以下 GitHub 仓库 README 生成完整 HTML。\n仓库名：\${repo.name}\n仓库链接：\${repoUrl}\nREADME 文件：\${readmeResult.path}\n\nREADME 内容：\n\${readmeResult.content}');
+  return template
+    .replace(/\$\{repo\.name\}/g, repo.name)
+    .replace(/\$\{repoUrl\}/g, repoUrl)
+    .replace(/\$\{readmeResult\.path\}/g, readmeResult.path)
+    .replace(/\$\{readmeResult\.content\}/g, readmeResult.content);
 }
 
 function buildReadmeHtmlRetryUserPrompt(repo, repoUrl, readmeResult, previousContent = '', previousError = '') {
@@ -2338,21 +2549,14 @@ function buildReadmeHtmlRetryUserPrompt(repo, repoUrl, readmeResult, previousCon
     .slice(0, 320);
   const errorMessage = sanitizeText(previousError);
 
-  return `${buildReadmeHtmlUserPrompt(repo, repoUrl, readmeResult)}
+  const baseUserPrompt = buildReadmeHtmlUserPrompt(repo, repoUrl, readmeResult);
 
-上一次返回未通过程序提取，请重新生成一次完整 HTML。
-${errorMessage ? `上一次问题：${errorMessage}` : ''}
-${preview ? `上一次返回预览：${preview}` : ''}
-
-强制要求：
-1. 只输出一个代码块，不要输出解释、说明、前言或结尾。
-2. 优先使用三单引号代码块，格式必须是：
-'''html
-<!DOCTYPE html>
-...
-'''
-3. 如果你没有使用三单引号，至少也要直接输出完整 HTML 文档本体，不要夹杂任何额外文字。
-4. HTML 必须完整，包含 <!DOCTYPE html>。`;
+  const template = resolvePrompt('readmeHtmlRetryUserPrompt',
+    '\${baseUserPrompt}\n\n上一次返回未通过程序提取，请重新生成一次完整 HTML。\n\${errorLine}\n\${previewLine}\n\n强制要求：\n1. 只输出一个代码块，不要输出解释、说明、前言或结尾。\n2. 优先使用三单引号代码块，格式必须是：\n\'\'\'html\n<!DOCTYPE html>\n...\n\'\'\'\n3. 如果你没有使用三单引号，至少也要直接输出完整 HTML 文档本体，不要夹杂任何额外文字。\n4. HTML 必须完整，包含 <!DOCTYPE html>。');
+  return template
+    .replace(/\$\{baseUserPrompt\}/g, baseUserPrompt)
+    .replace(/\$\{errorLine\}/g, errorMessage ? `上一次问题：${errorMessage}` : '')
+    .replace(/\$\{previewLine\}/g, preview ? `上一次返回预览：${preview}` : '');
 }
 
 async function requestReadmeHtmlWithRetry({
@@ -2600,10 +2804,10 @@ async function handleFetchSelectedReadmes(payload = {}) {
   }
 
   const htmlPrompt = loadReadmeHtmlPrompt();
-  const narrationSystemPrompt = '你是一位专业的中文讲解文案助手，只输出适合直接朗读的中文解说词正文。';
+  const narrationSystemPrompt = resolvePrompt('narrationSystemPrompt', '你是一位专业的中文讲解文案助手，只输出适合直接朗读的中文解说词正文。');
   const auth = loadAuth();
   const token = auth?.accessToken;
-  const pipelineNarrationSystemPrompt = '你是一位专业的中文讲解文案助手，只输出适合直接朗读的中文解说词正文。';
+  const pipelineNarrationSystemPrompt = resolvePrompt('narrationSystemPrompt', '你是一位专业的中文讲解文案助手，只输出适合直接朗读的中文解说词正文。');
   const pipelineRunStamp = new Date().toISOString().replace(/[:.]/g, '-');
   const pipelineOutputDir = path.join(README_CAROUSEL_RUNS_DIR, pipelineRunStamp);
   const pipelineManifestPath = path.join(pipelineOutputDir, 'manifest.json');
@@ -3157,6 +3361,7 @@ function findSimilarRepos(repos, savedRepos, tagMap) {
 
 async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
   const { systemPrompt } = aiConfig;
+  const effectiveSystemPrompt = resolvePrompt('userSystemPrompt', systemPrompt || '');
   const structuredAiConfig = { ...aiConfig };
   const structuredFallbackModel = getStructuredOutputFallbackModel(aiConfig?.baseUrl, aiConfig?.model);
   if (structuredFallbackModel && structuredFallbackModel !== aiConfig.model) {
@@ -3179,7 +3384,7 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
     temperature: 0,
   });
   const forceChineseOutputInstruction =
-    '无论如何都要输出中文。即使输入内容、仓库名、标签、引用材料或上下文中包含英文，也不要改用英文回答。';
+    resolvePrompt('forceChineseOutputInstruction', '无论如何都要输出中文。即使输入内容、仓库名、标签、引用材料或上下文中包含英文，也不要改用英文回答。');
   const withForcedChineseOutput = (prompt) =>
     `${String(prompt || '').trim()}\n\n额外要求：${forceChineseOutputInstruction}`;
 
@@ -3224,12 +3429,12 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
 
   const buildChinesePrompt = (prompt) =>
     `${String(prompt || '').trim()}\n\nAdditional requirement: ${forceChineseOutputInstruction}`;
-  const structuredOutputGuard = [
+  const structuredOutputGuard = resolvePrompt('structuredOutputGuard', [
     'Structured output only.',
     'Do not output thinking, reasoning, explanations, markdown, code fences, XML, or <think> tags.',
     'Do not output any prose before or after the structured data.',
     'If line format is requested, return exactly one repo per line: owner/repo|tag1,tag2|description.',
-  ].join('\n');
+  ].join('\n'));
   const withStructuredOutputGuard = (prompt) =>
     `${buildChinesePrompt(prompt)}\n\n${structuredOutputGuard}`;
   const buildTagAnalysisPreview = (content) => buildStructuredPreview(content, 200);
@@ -3257,15 +3462,14 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
 
     log(`[AI] ${retryLabel}: 结构化输出未命中，正在使用 JSON 重试`, 'warn');
 
-    const retryPrompt = [
-      String(systemPromptText || '').trim(),
-      '',
-      'Retry mode: return valid JSON only.',
-      'No prose, no markdown, no code fences, no <think> tags.',
-      'Use this exact schema:',
-      '{"items":[{"name":"owner/repo","tags":["tag1","tag2"],"description":"一句中文描述"}]}',
-      expectedRepoNames.length > 0 ? `Allowed repo names: ${expectedRepoNames.join(', ')}` : '',
-    ].filter(Boolean).join('\n');
+    const retryTemplate = resolvePrompt('structuredOutputRetryPrompt',
+      '\${systemPromptText}\n\nRetry mode: return valid JSON only.\nNo prose, no markdown, no code fences, no <think> tags.\nUse this exact schema:\n{"items":[{"name":"owner/repo","tags":["tag1","tag2"],"description":"一句中文描述"}]}\n\${expectedRepoNamesLine}');
+    const retryPrompt = retryTemplate
+      .replace(/\$\{systemPromptText\}/g, String(systemPromptText || '').trim())
+      .replace(/\$\{expectedRepoNamesLine\}/g, expectedRepoNames.length > 0 ? `Allowed repo names: ${expectedRepoNames.join(', ')}` : '')
+      .split('\n')
+      .filter(line => line.trim())
+      .join('\n');
 
     const retryResult = await callStructuredAI([
       { role: 'system', content: withStructuredOutputGuard(retryPrompt) },
@@ -3306,7 +3510,8 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
     // ===== 模块一：标签分析（全部AI批量分析） =====
     log(`[AI] 正在为 ${repos.length} 个仓库生成标签...`, 'info');
 
-    const tagAnalysisPrompt = `你是一个GitHub项目分析专家。请分析以下仓库，对每个仓库：
+    const tagAnalysisPrompt = resolvePrompt('tagAnalysisPrompt',
+      `你是一个GitHub项目分析专家。请分析以下仓库，对每个仓库：
 1. 生成1-3个标签（技术领域/用途/特点）
 2. 用一句话描述它的核心内容
 
@@ -3333,7 +3538,7 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
 例如：facebook/react|JavaScript,UI框架,前端|React是一个用于构建用户界面的声明式JavaScript库
 例如：SomeRandomUser/star-4833d8|无意义|该仓库无意义
 
-请简洁回答，使用中文。`;
+请简洁回答，使用中文。`);
 
     // Batch AI: all repos, 50 per batch, sent in parallel
     const batchSize = 50;
@@ -3516,7 +3721,8 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
       }
 
       if (refEntries.length > 0) {
-        const descSupplementPrompt = `以下是几个信息不足的GitHub仓库，以及可能相关的历史仓库描述作为参考。请为每个仓库提供1-3个标签和一句话描述。
+        const descSupplementPrompt = resolvePrompt('descSupplementPrompt',
+          `以下是几个信息不足的GitHub仓库，以及可能相关的历史仓库描述作为参考。请为每个仓库提供1-3个标签和一句话描述。
 
 格式：仓库名|标签1,标签2|一句话描述
 
@@ -3537,7 +3743,7 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
 - 标签不要带序号、项目符号或前后空格，不要使用全角标点
 - 如果不确定，请优先使用标准标签，不要自造奇怪标签
 
-请简洁回答，使用中文。`;
+请简洁回答，使用中文。`);
 
         const descResult = await runStructuredRepoMappingRequest({
           systemPromptText: descSupplementPrompt,
@@ -3621,7 +3827,8 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
     // ===== 模块三：总结（当前批次 + 跨期趋势，并发发送） =====
     log('[AI] 正在生成总结...', 'info');
 
-    const currentSummaryPrompt = `你是一个GitHub趋势分析专家。以下是本次爬取的全部仓库数据（含标签、描述、stars、forks、更新时间）。
+    const currentSummaryPrompt = resolvePrompt('currentSummaryPrompt',
+      `你是一个GitHub趋势分析专家。以下是本次爬取的全部仓库数据（含标签、描述、stars、forks、更新时间）。
 
 请从以下角度总结：
 ## 标签分布趋势
@@ -3637,7 +3844,7 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
 ## 整体趋势判断
 - 新兴方向和值得关注的点
 
-请简洁回答，使用中文。`;
+请简洁回答，使用中文。`);
 
     const validRepos = mergedRepos.filter(r => r.updated === today);
     const currentText = validRepos.map(r =>
@@ -3679,7 +3886,7 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
     // Call 1: Current batch summary
     summaryPromises.push(
       callAI([
-        { role: 'system', content: buildChinesePrompt(systemPrompt || currentSummaryPrompt) },
+        { role: 'system', content: buildChinesePrompt(effectiveSystemPrompt || currentSummaryPrompt) },
         { role: 'user', content: `仓库总数: ${validRepos.length}\n语言分布: ${langSummary}\n\n仓库数据:\n${currentText}` },
       ], 300000).then(result => ({ type: 'current', result }))
     );
@@ -3694,12 +3901,13 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
       if (matchedHistorical.length > 0) {
         log(`[AI] 热门标签: ${topTags.join(', ')}, 找到 ${matchedHistorical.length} 个历史匹配仓库`, 'info');
 
-        const trendSummaryPrompt = `你是一个GitHub趋势分析专家。以下包含两部分数据：
+        const trendSummaryPrompt = resolvePrompt('trendSummaryPrompt',
+          `你是一个GitHub趋势分析专家。以下包含两部分数据：
 
 【当前批次】本次爬取的仓库（含标签、描述、stars、forks、更新时间）
 【历史匹配】从历史数据中找到的、与当前热门标签匹配的旧仓库
 
-热门标签：${topTags.join(', ')}
+热门标签：\${topTags}
 
 请从以下角度总结：
 ## 趋势对比
@@ -3715,7 +3923,7 @@ async function handleAnalyzeWithAI(aiConfig, repos, mainWindow) {
 ## 整体趋势判断
 - 基于时间跨度的新兴方向预测
 
-请简洁回答，使用中文。`;
+请简洁回答，使用中文。`).replace(/\$\{topTags\}/g, topTags.join(', '));
 
         const trendText = `【当前批次】\n${currentText}\n\n【历史匹配仓库】\n` +
           matchedHistorical.map(r =>
@@ -3791,10 +3999,569 @@ function handleLoadAiConfig() {
   return loadSettings();
 }
 
+// ========== 个人推送 (Email Push) ==========
+
+const nodemailer = require('nodemailer');
+const EMAIL_PUSH_CONFIG_FILE = path.join(DATA_DIR, 'email-push-config.json');
+
+function loadEmailPushConfig() {
+  try {
+    return JSON.parse(fs.readFileSync(EMAIL_PUSH_CONFIG_FILE, 'utf-8'));
+  } catch {
+    return { accounts: [] };
+  }
+}
+
+function saveEmailPushConfig(config) {
+  fs.writeFileSync(EMAIL_PUSH_CONFIG_FILE, JSON.stringify(config, null, 2));
+}
+
+function buildEmailBody(accountName, repos) {
+  const rows = repos
+    .map((r) => {
+      const tags = (r.aiTags && r.aiTags.length > 0)
+        ? r.aiTags.map((t) => `<span style="display:inline-block;background:#1c2333;color:#58a6ff;padding:1px 6px;border-radius:3px;font-size:11px;margin:1px 2px">${t}</span>`).join('')
+        : '';
+      const desc = r.aiDescription || r.description || '';
+      return [
+        '<tr>',
+        `<td><a href="${r.url}" style="color:#58a6ff">${r.name}</a><br>${tags}</td>`,
+        `<td>${r.language || 'N/A'}</td>`,
+        `<td>⭐ ${r.stars}</td>`,
+        `<td>🍴 ${r.forks}</td>`,
+        `<td>${r.created || ''}</td>`,
+        `<td style="max-width:350px;font-size:12px">${desc}</td>`,
+        '</tr>',
+      ].join('');
+    })
+    .join('');
+
+  return [
+    '<!DOCTYPE html>',
+    '<html><head><meta charset="utf-8"></head>',
+    '<body style="font-family:Arial,sans-serif;background:#0d1117;color:#e6edf3;padding:20px">',
+    `<h2 style="color:#58a6ff">GitHub Scout - ${accountName} 推送</h2>`,
+    `<p>共 ${repos.length} 个仓库，${new Date().toLocaleDateString('zh-CN')} 更新</p>`,
+    '<table style="width:100%;border-collapse:collapse;font-size:13px">',
+    '<thead><tr style="background:#161b22;text-align:left">',
+    '<th style="padding:8px">仓库 / 标签</th><th style="padding:8px">语言</th><th style="padding:8px">Stars</th><th style="padding:8px">Forks</th><th style="padding:8px">创建</th><th style="padding:8px">AI 描述</th>',
+    '</tr></thead>',
+    '<tbody>',
+    rows,
+    '</tbody></table>',
+    '</body></html>',
+  ].join('');
+}
+
+async function sendEmailViaSmtp(account, repos) {
+  log(`[个人推送] 准备发送 ${repos.length} 个仓库到 ${account.recipients.length} 个收件人`, 'info');
+  log(`[个人推送] SMTP: ${account.smtpHost}:${account.smtpPort}, 用户: ${account.smtpUser}`, 'info');
+
+  let transporter;
+  try {
+    log(`[个人推送] 正在连接 SMTP 服务器...`, 'info');
+    transporter = nodemailer.createTransport({
+      host: account.smtpHost,
+      port: account.smtpPort,
+      secure: account.smtpPort === 465,
+      auth: {
+        user: account.smtpUser,
+        pass: account.smtpPass,
+      },
+      tls: account.useTls !== false ? { rejectUnauthorized: false } : undefined,
+      connectionTimeout: 15000,
+      greetingTimeout: 10000,
+    });
+    log(`[个人推送] SMTP 连接已建立`, 'success');
+  } catch (e) {
+    log(`[个人推送] SMTP 连接失败: ${e.message}`, 'error');
+    return account.recipients.map((r) => ({ recipient: r, ok: false, error: `连接失败: ${e.message}` }));
+  }
+
+  const subject = `GitHub Scout 仓库推送 - ${account.name} (${new Date().toLocaleDateString('zh-CN')})`;
+  const html = buildEmailBody(account.name, repos);
+  log(`[个人推送] 邮件正文已生成 (${Buffer.byteLength(html, 'utf8')} bytes)`, 'info');
+  const results = [];
+
+  for (let i = 0; i < account.recipients.length; i++) {
+    const recipient = account.recipients[i];
+    log(`[个人推送] [${i + 1}/${account.recipients.length}] 正在发送至 ${recipient}...`, 'info');
+    try {
+      const info = await transporter.sendMail({
+        from: `"GitHub Scout" <${account.smtpUser}>`,
+        to: recipient,
+        subject,
+        html,
+      });
+      results.push({ recipient, ok: true, messageId: info.messageId });
+      log(`[个人推送] [${i + 1}/${account.recipients.length}] 已发送至 ${recipient} (${info.messageId})`, 'success');
+    } catch (e) {
+      results.push({ recipient, ok: false, error: e.message });
+      log(`[个人推送] [${i + 1}/${account.recipients.length}] 发送至 ${recipient} 失败: ${e.message}`, 'error');
+      log(`[个人推送] 失败详情: code=${e.code || 'N/A'}, command=${e.command || 'N/A'}, response=${e.response || 'N/A'}`, 'error');
+    }
+  }
+  return results;
+}
+
+async function testSmtpConnection(account) {
+  try {
+    const transporter = nodemailer.createTransport({
+      host: account.smtpHost,
+      port: account.smtpPort,
+      secure: account.smtpPort === 465,
+      auth: { user: account.smtpUser, pass: account.smtpPass },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+    });
+    await transporter.verify();
+    return { ok: true, message: `${account.smtpHost}:${account.smtpPort} 连接成功` };
+  } catch (e) {
+    return { ok: false, message: e.message };
+  }
+}
+
+function handleLoadEmailPushConfig() {
+  return loadEmailPushConfig();
+}
+
+function handleSaveEmailPushConfig(config) {
+  try {
+    saveEmailPushConfig(config);
+    log('[个人推送] 配置已保存', 'success');
+    return { ok: true };
+  } catch (e) {
+    log(`[个人推送] 配置保存失败: ${e.message}`, 'error');
+    return { ok: false, message: e.message };
+  }
+}
+
+async function handleEmailPushTestSmtp(payload) {
+  const config = loadEmailPushConfig();
+  let account = (config.accounts || []).find((a) => a.id === payload.accountId);
+  // Support testing with unsaved draft settings
+  if (payload.tempAccount) {
+    account = { ...account, ...payload.tempAccount };
+  }
+  if (!account) return { ok: false, message: '未找到指定邮箱账户' };
+  return testSmtpConnection(account);
+}
+
+async function handleEmailPushSend(payload) {
+  log(`[个人推送] 开始发送流程...`, 'info');
+  const config = loadEmailPushConfig();
+  const account = (config.accounts || []).find((a) => a.id === payload.accountId);
+  if (!account) {
+    log(`[个人推送] 发送失败: 未找到指定邮箱账户 ${payload.accountId}`, 'error');
+    return { ok: false, message: '未找到指定邮箱账户' };
+  }
+  if (!payload.repos || payload.repos.length === 0) {
+    log(`[个人推送] 发送失败: 没有要发送的仓库`, 'error');
+    return { ok: false, message: '没有要发送的仓库' };
+  }
+  if (!account.recipients || account.recipients.length === 0) {
+    log(`[个人推送] 发送失败: 没有配置收件人`, 'error');
+    return { ok: false, message: '没有配置收件人' };
+  }
+
+  log(`[个人推送] 发送配置: 账户=${account.name}, 仓库数=${payload.repos.length}, 收件人数=${account.recipients.length}`, 'info');
+  const results = await sendEmailViaSmtp(account, payload.repos);
+  const okCount = results.filter((r) => r.ok).length;
+  const failCount = results.filter((r) => !r.ok).length;
+  log(`[个人推送] 发送完成: 成功 ${okCount}, 失败 ${failCount}`, okCount > 0 ? 'success' : 'error');
+  const allOk = failCount === 0;
+  return { ok: allOk, results };
+}
+
+async function handleEmailPushCrawl(payload, mainWindow) {
+  const config = loadEmailPushConfig();
+  const account = (config.accounts || []).find((a) => a.id === payload.accountId);
+  if (!account) return { ok: false, message: '未找到指定邮箱账户', repos: [], total: 0 };
+
+  // Step 1: Crawl repos
+  log(`[个人推送] 开始为 ${account.name} 爬取 GitHub 仓库...`, 'info');
+  const result = await handleFetchRepos({ filterConfig: account.crawlConfig });
+  log(`[个人推送] ${account.name} 爬取完成，共 ${result.total} 个仓库`, 'success');
+
+  if (!result.repos || result.repos.length === 0) {
+    log(`[个人推送] ${account.name} 没有爬取到仓库，跳过 AI 分析`, 'warn');
+    return { ok: true, repos: [], total: 0 };
+  }
+
+  // Step 2: Load AI config and run analysis
+  const settings = loadSettings();
+  const aiConfig = {
+    vendor: settings.vendor || 'openai',
+    vendors: settings.vendors || {},
+    systemPrompt: settings.systemPrompt || '',
+  };
+
+  // Resolve the active vendor config
+  let activeVendorConfig = null;
+  if (aiConfig.vendors && aiConfig.vendors[aiConfig.vendor]) {
+    activeVendorConfig = aiConfig.vendors[aiConfig.vendor];
+  } else if (aiConfig.vendors) {
+    // Fallback to first available vendor
+    const firstKey = Object.keys(aiConfig.vendors)[0];
+    if (firstKey) activeVendorConfig = aiConfig.vendors[firstKey];
+  }
+
+  if (!activeVendorConfig || !activeVendorConfig.baseUrl || !activeVendorConfig.apiKey) {
+    log(`[个人推送] 未配置 AI，仅使用原始描述`, 'warn');
+    return { ok: true, repos: result.repos, total: result.total };
+  }
+
+  log(`[个人推送] 开始 AI 分析 ${result.repos.length} 个仓库 (模型: ${activeVendorConfig.model || 'default'})...`, 'info');
+
+  try {
+    const analysisResult = await handleAnalyzeWithAI(
+      {
+        baseUrl: activeVendorConfig.baseUrl,
+        apiKey: activeVendorConfig.apiKey,
+        model: activeVendorConfig.model || '',
+        systemPrompt: aiConfig.systemPrompt || '',
+      },
+      result.repos,
+      mainWindow,
+    );
+
+    // Step 3: Merge AI tags and descriptions into repos
+    const repoTags = analysisResult.repoTags || {};
+    const reposWithAI = result.repos.map((repo) => {
+      const aiData = repoTags[repo.name];
+      return {
+        ...repo,
+        aiTags: aiData?.tags || [],
+        aiDescription: aiData?.description || repo.description || '',
+      };
+    });
+
+    const analyzedCount = Object.keys(repoTags).length;
+    log(`[个人推送] AI 分析完成: ${analyzedCount}/${result.repos.length} 个仓库获得标签和描述`, 'success');
+    return { ok: true, repos: reposWithAI, total: reposWithAI.length };
+  } catch (e) {
+    log(`[个人推送] AI 分析失败: ${e.message}，使用原始描述`, 'error');
+    return { ok: true, repos: result.repos, total: result.total };
+  }
+}
+
+// --- RSS Feed Generation ---
+
+function escapeXml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function toRfc822Date(d) {
+  const date = d ? new Date(d) : new Date();
+  if (isNaN(date.getTime())) return toRfc822Date();
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${days[date.getUTCDay()]}, ${pad(date.getUTCDate())} ${months[date.getUTCMonth()]} ${date.getUTCFullYear()} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} GMT`;
+}
+
+function buildRssXml(account, repos) {
+  const rssConfig = account.rssConfig || {};
+  const title = escapeXml(rssConfig.title || `GitHub Scout - ${account.name || 'Untitled'}`);
+  const description = escapeXml(rssConfig.description || 'GitHub 仓库推送');
+  const link = escapeXml(rssConfig.link || 'https://github.com');
+  const buildDate = toRfc822Date();
+
+  const items = repos.map((r) => {
+    const tags = (r.aiTags && r.aiTags.length > 0) ? r.aiTags.join(', ') : '';
+    const desc = r.aiDescription || r.description || '';
+    const repoLink = r.url || `https://github.com/${r.name}`;
+    const pubDate = toRfc822Date(r.created || r.updated);
+
+    const descHtml = [
+      tags ? `<p><strong>标签:</strong> ${escapeXml(tags)}</p>` : '',
+      desc ? `<p>${escapeXml(desc)}</p>` : '',
+      `<p>⭐ ${r.stars || 0} | 🍴 ${r.forks || 0} | ${escapeXml(r.language || 'N/A')}</p>`,
+    ].filter(Boolean).join('\n          ');
+
+    return [
+      '    <item>',
+      `      <title>${escapeXml(r.name)}</title>`,
+      `      <link>${escapeXml(repoLink)}</link>`,
+      `      <description>${descHtml}</description>`,
+      `      <pubDate>${pubDate}</pubDate>`,
+      `      <guid isPermaLink="true">${escapeXml(repoLink)}</guid>`,
+      '    </item>',
+    ].join('\n');
+  }).join('\n');
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">',
+    '  <channel>',
+    `    <title>${title}</title>`,
+    `    <description>${description}</description>`,
+    `    <link>${escapeXml(link)}</link>`,
+    `    <lastBuildDate>${buildDate}</lastBuildDate>`,
+    `    <generator>GitHub Scout</generator>`,
+    `    <atom:link href="${escapeXml(link)}" rel="self" type="application/rss+xml"/>`,
+    items,
+    '  </channel>',
+    '</rss>',
+  ].join('\n');
+}
+
+function computeRssPublicUrl(account) {
+  const rssConfig = account.rssConfig || {};
+  if (rssConfig.publicUrl && rssConfig.publicUrl.trim()) {
+    return rssConfig.publicUrl.trim();
+  }
+  const repo = (rssConfig.repo || '').trim();
+  const branch = (rssConfig.branch || 'main').trim();
+  const filePath = (rssConfig.filePath || 'feed.xml').trim();
+  if (!repo) return '';
+
+  const parts = repo.split('/');
+  if (parts.length !== 2) return '';
+
+  const [owner, repoName] = parts;
+  if (repoName.endsWith('.github.io')) {
+    return `https://${repoName}/${filePath}`;
+  }
+  return `https://raw.githubusercontent.com/${owner}/${repoName}/${branch}/${filePath}`;
+}
+
+async function handlePushRssUpload(payload) {
+  const config = loadEmailPushConfig();
+  const account = (config.accounts || []).find((a) => a.id === payload.accountId);
+  if (!account) return { ok: false, message: '未找到指定账户' };
+  if (!payload.repos || payload.repos.length === 0) {
+    return { ok: false, message: '没有要上传的仓库' };
+  }
+
+  const rssConfig = account.rssConfig || {};
+  const repo = (rssConfig.repo || '').trim();
+  if (!repo || !repo.includes('/')) {
+    return { ok: false, message: '请在 RSS 设置中填写目标仓库（格式：owner/repo）' };
+  }
+
+  // Load GitHub token
+  const auth = loadAuth();
+  const token = auth?.token;
+  if (!token) {
+    return { ok: false, message: '请先在 GitHub 登录中完成认证（需要 repo 权限的 PAT）' };
+  }
+
+  const rssXml = buildRssXml(account, payload.repos);
+  const branch = (rssConfig.branch || 'main').trim();
+  const filePath = (rssConfig.filePath || 'feed.xml').trim().replace(/^\//, '');
+  const commitMessage = (rssConfig.commitMessage || 'Update RSS feed').trim();
+  const [owner, repoName] = repo.split('/').map((s) => s.trim());
+  const apiPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/contents/${encodeURIComponent(filePath)}`;
+
+  log(`[个人推送 RSS] 开始上传到 ${repo}/${filePath}...`, 'info');
+
+  // Step 1: Fetch existing file SHA (if any)
+  let sha = null;
+  try {
+    const getRes = await httpsGet(
+      `https://api.github.com${apiPath}?ref=${encodeURIComponent(branch)}`,
+      buildGitHubHeaders(token),
+    );
+    if (getRes.statusCode === 200) {
+      const parsed = parseJsonSafely(getRes.data);
+      if (parsed?.sha) sha = parsed.sha;
+      log(`[个人推送 RSS] 检测到已有文件，将更新 (SHA: ${sha?.slice(0, 8)}...)`, 'info');
+    } else if (getRes.statusCode === 404) {
+      log('[个人推送 RSS] 目标文件不存在，将创建新文件', 'info');
+    } else {
+      log(`[个人推送 RSS] 获取文件信息返回 ${getRes.statusCode}，继续尝试上传`, 'warn');
+    }
+  } catch (e) {
+    log(`[个人推送 RSS] 获取文件信息失败: ${e.message}，继续尝试上传`, 'warn');
+  }
+
+  // Step 2: Create or update file via GitHub Contents API
+  const body = {
+    message: commitMessage,
+    content: Buffer.from(rssXml, 'utf-8').toString('base64'),
+    branch,
+  };
+  if (sha) body.sha = sha;
+
+  try {
+    const putRes = await httpsRequest(
+      `https://api.github.com${apiPath}`,
+      { headers: buildGitHubHeaders(token) },
+      JSON.stringify(body),
+      'PUT',
+    );
+
+    if (putRes.statusCode === 201 || putRes.statusCode === 200) {
+      const publicUrl = computeRssPublicUrl(account);
+      log(`[个人推送 RSS] 上传成功 (HTTP ${putRes.statusCode})`, 'success');
+      log(`[个人推送 RSS] 公开地址: ${publicUrl}`, 'info');
+      return {
+        ok: true,
+        filePath,
+        repo,
+        branch,
+        publicUrl: publicUrl || `https://github.com/${repo}/blob/${branch}/${filePath}`,
+        status: sha ? 'updated' : 'created',
+      };
+    }
+
+    const parsed = parseJsonSafely(putRes.data);
+    const msg = parsed?.message || `HTTP ${putRes.statusCode}`;
+    log(`[个人推送 RSS] 上传失败: ${msg}`, 'error');
+
+    // Check for common permission issues
+    if (putRes.statusCode === 401 || putRes.statusCode === 403) {
+      return { ok: false, message: `上传失败 (${msg})。请确认 GitHub Token 拥有 repo 权限，且你有该仓库的写入权限。` };
+    }
+    if (putRes.statusCode === 404) {
+      return { ok: false, message: `仓库 ${repo} 不存在或分支 ${branch} 不存在` };
+    }
+    if (putRes.statusCode === 422) {
+      return { ok: false, message: `上传失败: ${msg}` };
+    }
+    return { ok: false, message: `上传失败: ${msg}` };
+  } catch (e) {
+    log(`[个人推送 RSS] 上传异常: ${e.message}`, 'error');
+    return { ok: false, message: `上传异常: ${e.message}` };
+  }
+}
+
+function handleLoadAllPrompts() {
+  const registry = getPromptRegistry();
+  const values = {};
+  for (const entry of registry) {
+    let defaultText = entry.defaultText;
+    if (entry.filePath) {
+      const filePath = path.join(__dirname, '..', entry.filePath);
+      if (fs.existsSync(filePath)) {
+        defaultText = fs.readFileSync(filePath, 'utf8').trim();
+      }
+    }
+    const currentText = resolvePrompt(entry.key, defaultText);
+    values[entry.key] = {
+      defaultText,
+      currentText,
+      isCustomized: Boolean(promptOverrides[entry.key] && String(promptOverrides[entry.key]).trim()),
+      isTemplate: entry.isTemplate,
+      templateVars: entry.templateVars || [],
+    };
+  }
+
+  const promptsMeta = registry.map(e => ({
+    key: e.key,
+    name: e.name,
+    category: e.category,
+    isTemplate: e.isTemplate,
+    templateVars: e.templateVars || [],
+  }));
+
+  return { prompts: promptsMeta, values };
+}
+
+function handleSavePrompt(key, text) {
+  const registry = getPromptRegistry();
+  const entry = registry.find(e => e.key === key);
+  if (!entry) {
+    return { ok: false, message: `Unknown prompt key: ${key}` };
+  }
+  const trimmed = String(text || '').trim();
+
+  // Record previous version to history before overwriting
+  if (promptOverrides[key] && String(promptOverrides[key]).trim()) {
+    if (!promptHistory[key]) promptHistory[key] = [];
+    const prevText = String(promptOverrides[key]).trim();
+    // Don't record if identical to the last history entry
+    const lastEntry = promptHistory[key].length > 0 ? promptHistory[key][promptHistory[key].length - 1] : null;
+    if (!lastEntry || lastEntry.text !== prevText) {
+      promptHistory[key].push({
+        text: prevText,
+        timestamp: new Date().toISOString(),
+        version: promptHistory[key].length + 1,
+      });
+      // Keep last 30 versions per prompt
+      if (promptHistory[key].length > 30) {
+        promptHistory[key] = promptHistory[key].slice(-30);
+      }
+    }
+  }
+
+  if (trimmed) {
+    promptOverrides[key] = trimmed;
+  } else {
+    delete promptOverrides[key];
+  }
+  savePromptOverrides();
+  savePromptHistory();
+  log(`[配置] 提示词 "${entry.name}" 已保存`, 'success');
+  return { ok: true };
+}
+
+function handleResetPrompt(key) {
+  delete promptOverrides[key];
+  savePromptOverrides();
+  log(`[配置] 提示词 "${key}" 已重置为默认`, 'success');
+  return { ok: true };
+}
+
+function handleGetPromptHistory(key) {
+  const entries = promptHistory[key] || [];
+  return {
+    ok: true,
+    key,
+    history: entries.map((e, i) => ({
+      version: e.version,
+      timestamp: e.timestamp,
+      text: e.text,
+      index: i,
+    })),
+  };
+}
+
+function handleRollbackPrompt(key, versionIndex) {
+  const history = promptHistory[key] || [];
+  if (versionIndex < 0 || versionIndex >= history.length) {
+    return { ok: false, message: `Invalid version index: ${versionIndex}` };
+  }
+  const target = history[versionIndex];
+  if (!target) {
+    return { ok: false, message: 'Version not found' };
+  }
+
+  // Save current version to history before rolling back
+  if (promptOverrides[key] && String(promptOverrides[key]).trim()) {
+    const lastEntry = history.length > 0 ? history[history.length - 1] : null;
+    if (!lastEntry || lastEntry.text !== String(promptOverrides[key]).trim()) {
+      history.push({
+        text: String(promptOverrides[key]).trim(),
+        timestamp: new Date().toISOString(),
+        version: history.length + 1,
+      });
+    }
+  }
+
+  promptOverrides[key] = target.text;
+  savePromptOverrides();
+  savePromptHistory();
+  log(`[配置] 提示词 "${key}" 已回退到版本 ${target.version}`, 'success');
+  return { ok: true, text: target.text, version: target.version };
+}
+
 module.exports = {
   handleFetchRepos, handleAnalyzeWithAI, handleFetchSelectedReadmes, handleTestConnection,
   loadSettings, saveSettings,
   handleStartGitHubLogin, handlePollGitHubToken, handleLoginWithPat, handleGetAuthStatus, handleLogout,
   handleSaveAiConfig, handleLoadAiConfig,
+  handleLoadEmailPushConfig, handleSaveEmailPushConfig,
+  handleEmailPushTestSmtp, handleEmailPushSend, handleEmailPushCrawl,
+  handlePushRssUpload, computeRssPublicUrl,
+  handleLoadAllPrompts, handleSavePrompt, handleResetPrompt,
+  handleGetPromptHistory, handleRollbackPrompt,
   logEmitter, log,
 };
