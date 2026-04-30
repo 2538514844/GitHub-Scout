@@ -7,6 +7,9 @@ import Auth from './components/Auth';
 import EmailPushPanel from './components/EmailPushPanel';
 import EmailPushEditor from './components/EmailPushEditor';
 import PromptEditorPanel from './components/PromptEditorPanel';
+import GlobalSmtpSettings from './components/GlobalSmtpSettings';
+import GlobalRssSettings from './components/GlobalRssSettings';
+import Sidebar from './components/Sidebar';
 import useUiSwitchSound from './hooks/useUiSwitchSound';
 
 function isReasoningModel(model = '') {
@@ -56,7 +59,6 @@ function App() {
   const [analysis, setAnalysis] = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [aiConfig, setAiConfig] = useState(null);
-  const [showConfig, setShowConfig] = useState(true);
   const [logs, setLogs] = useState([]);
   const [showLogs, setShowLogs] = useState(true);
   const [fetchLogs, setFetchLogs] = useState([]);
@@ -73,11 +75,10 @@ function App() {
   const [fetchingReadmes, setFetchingReadmes] = useState(false);
   const { soundEnabled, setSoundEnabled, playSwitchSound } = useUiSwitchSound();
 
-  // Prompt editor state
-  const [showPromptEditor, setShowPromptEditor] = useState(false);
+  // Sidebar state (replaces individual showConfig/showEmailPush/showPromptEditor)
+  const [activeSidebarTab, setActiveSidebarTab] = useState(null);
 
   // Email push state
-  const [showEmailPush, setShowEmailPush] = useState(false);
   const [emailPushAccounts, setEmailPushAccounts] = useState([]);
   const [emailPushRepos, setEmailPushRepos] = useState(null);
   const [emailPushCrawling, setEmailPushCrawling] = useState(false);
@@ -85,6 +86,12 @@ function App() {
   const [emailPushSending, setEmailPushSending] = useState(false);
   const [emailPushUploadingRss, setEmailPushUploadingRss] = useState(false);
   const [emailPushEditorAccount, setEmailPushEditorAccount] = useState(null);
+
+  // Global SMTP state
+  const [globalSmtp, setGlobalSmtp] = useState(null);
+
+  // Global RSS state
+  const [globalRss, setGlobalRss] = useState(null);
 
   // Fetch filter state
   const [showFilter, setShowFilter] = useState(false);
@@ -142,6 +149,8 @@ function App() {
     try {
       const config = await window.electronAPI.loadEmailPushConfig();
       if (config?.accounts) setEmailPushAccounts(config.accounts);
+      if (config?.smtp) setGlobalSmtp(config.smtp);
+      if (config?.rss) setGlobalRss(config.rss);
     } catch { /* no config yet */ }
   }, []);
 
@@ -578,9 +587,34 @@ function App() {
     }
   }, []);
 
-  const handleEmailPushToggle = () => {
+  const handleSaveGlobalSmtp = useCallback(async (smtpConfig) => {
+    setGlobalSmtp(smtpConfig);
+    await window.electronAPI.saveGlobalSmtp(smtpConfig);
+  }, []);
+
+  const handleSaveGlobalRss = useCallback(async (rssConfig) => {
+    setGlobalRss(rssConfig);
+    await window.electronAPI.saveGlobalRss(rssConfig);
+  }, []);
+
+  const handleGlobalRssUpload = useCallback(async (repos) => {
+    setEmailPushUploadingRss(true);
+    try {
+      const result = await window.electronAPI.pushGlobalRss({ repos });
+      return result;
+    } finally {
+      setEmailPushUploadingRss(false);
+    }
+  }, []);
+
+  const handleSidebarToggle = () => {
     handleUiNavigateSound('toggle');
-    setShowEmailPush((prev) => !prev);
+    setActiveSidebarTab((prev) => (prev ? null : 'config'));
+  };
+
+  const handleSidebarTabChange = (tab) => {
+    handleUiNavigateSound('tab');
+    setActiveSidebarTab((prev) => (prev === tab ? null : tab));
   };
 
   const handleFilterToggle = () => {
@@ -591,11 +625,6 @@ function App() {
   const handleLogToggle = () => {
     handleUiNavigateSound('toggle');
     setShowLogs((prev) => !prev);
-  };
-
-  const handleConfigToggle = () => {
-    handleUiNavigateSound('toggle');
-    setShowConfig((prev) => !prev);
   };
 
   const handleLogTabChange = (tab) => {
@@ -731,31 +760,21 @@ function App() {
             日志 {logs.length > 0 && <span className="log-badge">{logs.length > 99 ? '99+' : logs.length}</span>}
           </button>
           <button
-            className="config-toggle"
-            onClick={handleConfigToggle}
-          >
-            {showConfig ? '收起' : 'AI 配置'}
-          </button>
-          <button
-            className={`push-email-toggle-btn ${showEmailPush ? 'active' : ''}`}
-            onClick={handleEmailPushToggle}
-          >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M0 4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V4Zm2-1a1 1 0 0 0-1 1v.217l7 4.2 7-4.2V4a1 1 0 0 0-1-1H2Zm13 2.383-4.708 2.825L15 11.105V5.383Zm-.034 6.876-5.64-3.47L8 9.583l-1.326-.795-5.64 3.47A1 1 0 0 0 2 13h12a1 1 0 0 0 .966-.741ZM1 11.105l4.708-2.897L1 5.383v5.722Z"/>
-            </svg>
-            个人推送 {showEmailPush ? '▲' : '▼'}
-          </button>
-          <button
-            className={`prompt-editor-toggle-btn ${showPromptEditor ? 'active' : ''}`}
-            onClick={() => {
-              handleUiNavigateSound('toggle');
-              setShowPromptEditor((prev) => !prev);
+            className={`sidebar-toggle-btn ${activeSidebarTab ? 'active' : ''}`}
+            onClick={handleSidebarToggle}
+            style={{
+              padding: '7px 14px', border: '1px solid var(--border)', borderRadius: 6,
+              fontSize: 13, fontWeight: 500, background: 'var(--bg-tertiary)',
+              color: 'var(--text)', cursor: 'pointer', display: 'flex',
+              alignItems: 'center', gap: 5, fontFamily: 'inherit',
             }}
           >
             <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M12.854.146a.5.5 0 0 0-.707 0L10.5 1.793 14.207 5.5l1.647-1.646a.5.5 0 0 0 0-.708l-3-3zm.646 6.061L9.293 2H1.5A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h9a1.5 1.5 0 0 0 1.5-1.5V5.793l1.5-1.5v6.957a.5.5 0 1 0 1 0V3.5c0-.439-.146-.844-.396-1.176L13.5 4.561V3.354l-.146-.147zM11.5 12.5h-9a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5H8.293l1.5 1.5V5.5h2.207v6.5a.5.5 0 0 1-.5.5z"/>
+              <rect x="1" y="2" width="14" height="2" rx="1"/>
+              <rect x="1" y="7" width="14" height="2" rx="1"/>
+              <rect x="1" y="12" width="14" height="2" rx="1"/>
             </svg>
-            提示词 {showPromptEditor ? '▲' : '▼'}
+            侧栏 {activeSidebarTab ? '▲' : '▼'}
           </button>
         </div>
       </header>
@@ -867,30 +886,52 @@ function App() {
       )}
 
       <div className="main-content">
-        {showConfig && (
-          <ConfigPanel
-            aiConfig={aiConfig}
-            onSave={saveAiConfig}
-            onTest={handleTestConnection}
-            onNavigateSound={handleUiNavigateSound}
-          />
-        )}
-
-        {showEmailPush && (
-          <EmailPushPanel
-            accounts={emailPushAccounts}
-            onUpdateAccounts={handleEmailPushUpdateAccounts}
-            onCrawlAccount={handleEmailPushCrawl}
-            onOpenEditor={handleEmailPushOpenEditor}
-            crawlingAccountId={emailPushCrawlingId}
-            loading={emailPushCrawling}
-          />
-        )}
-
-        {showPromptEditor && (
-          <PromptEditorPanel
-            onClose={() => setShowPromptEditor(false)}
-          />
+        {activeSidebarTab && (
+          <Sidebar
+            activeTab={activeSidebarTab}
+            onTabChange={handleSidebarTabChange}
+            accountsCount={emailPushAccounts.length}
+          >
+            {activeSidebarTab === 'config' && (
+              <ConfigPanel
+                aiConfig={aiConfig}
+                onSave={saveAiConfig}
+                onTest={handleTestConnection}
+                onNavigateSound={handleUiNavigateSound}
+              />
+            )}
+            {activeSidebarTab === 'email-push' && (
+              <EmailPushPanel
+                accounts={emailPushAccounts}
+                onUpdateAccounts={handleEmailPushUpdateAccounts}
+                onCrawlAccount={handleEmailPushCrawl}
+                onOpenEditor={handleEmailPushOpenEditor}
+                crawlingAccountId={emailPushCrawlingId}
+                loading={emailPushCrawling}
+                globalSmtp={globalSmtp}
+                onOpenSmtpSettings={() => setActiveSidebarTab('smtp')}
+                globalRss={globalRss}
+                onOpenRssSettings={() => setActiveSidebarTab('rss')}
+              />
+            )}
+            {activeSidebarTab === 'smtp' && (
+              <GlobalSmtpSettings
+                smtp={globalSmtp}
+                onSave={handleSaveGlobalSmtp}
+              />
+            )}
+            {activeSidebarTab === 'rss' && (
+              <GlobalRssSettings
+                rss={globalRss}
+                onSave={handleSaveGlobalRss}
+              />
+            )}
+            {activeSidebarTab === 'prompts' && (
+              <PromptEditorPanel
+                onClose={() => setActiveSidebarTab(null)}
+              />
+            )}
+          </Sidebar>
         )}
 
         <div className="right-panel">
@@ -976,6 +1017,9 @@ function App() {
           sending={emailPushSending}
           onUploadRss={handleEmailPushUploadRss}
           uploadingRss={emailPushUploadingRss}
+          onUploadGlobalRss={handleGlobalRssUpload}
+          uploadingGlobalRss={emailPushUploadingRss}
+          globalRss={globalRss}
         />
       )}
     </div>

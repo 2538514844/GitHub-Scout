@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from 'react';
 
-export default function EmailPushEditor({ account, repos = [], onClose, onSend, sending, onUploadRss, uploadingRss }) {
+export default function EmailPushEditor({ account, repos = [], onClose, onSend, sending, onUploadRss, uploadingRss, onUploadGlobalRss, uploadingGlobalRss, globalRss }) {
   const [editableRepos, setEditableRepos] = useState(() =>
     repos.map((r) => ({ ...r, checked: true })),
   );
@@ -9,6 +9,7 @@ export default function EmailPushEditor({ account, repos = [], onClose, onSend, 
   const [sendResults, setSendResults] = useState(null);
   const [sendError, setSendError] = useState(null);
   const [rssResult, setRssResult] = useState(null);
+  const [globalRssResult, setGlobalRssResult] = useState(null);
 
   const checkedCount = useMemo(
     () => editableRepos.filter((r) => r.checked).length,
@@ -112,6 +113,21 @@ export default function EmailPushEditor({ account, repos = [], onClose, onSend, 
       setRssResult({ ok: false, message: e.message });
     }
   }, [editableRepos, account, onUploadRss]);
+
+  const handleUploadGlobalRss = useCallback(async () => {
+    const selected = editableRepos.filter((r) => r.checked);
+    if (selected.length === 0) {
+      setGlobalRssResult({ ok: false, message: '请至少勾选一个仓库' });
+      return;
+    }
+    setGlobalRssResult(null);
+    try {
+      const result = await onUploadGlobalRss(selected);
+      setGlobalRssResult(result);
+    } catch (e) {
+      setGlobalRssResult({ ok: false, message: e.message });
+    }
+  }, [editableRepos, onUploadGlobalRss]);
 
   return (
     <div className="email-push-editor-overlay">
@@ -276,6 +292,15 @@ export default function EmailPushEditor({ account, repos = [], onClose, onSend, 
                 </span>
               </div>
             )}
+            {globalRssResult && (
+              <div className="push-send-results">
+                <span className={`push-test-msg ${globalRssResult.ok ? 'ok' : 'fail'}`}>
+                  {globalRssResult.ok
+                    ? <>✓ 全局 RSS 已上传{globalRssResult.publicUrl && <> — <a href={globalRssResult.publicUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>{globalRssResult.publicUrl}</a></>}</>
+                    : `✗ ${globalRssResult.message}`}
+                </span>
+              </div>
+            )}
           </div>
           <div className="email-push-editor-buttons">
             <span style={{ fontSize: 12, color: 'var(--text-secondary)', marginRight: 12 }}>
@@ -287,7 +312,17 @@ export default function EmailPushEditor({ account, repos = [], onClose, onSend, 
                 onClick={handleUploadRss}
                 disabled={uploadingRss || checkedCount === 0}
               >
-                {uploadingRss ? '上传中...' : `上传 RSS (${checkedCount})`}
+                {uploadingRss ? '上传中...' : `本账户 RSS (${checkedCount})`}
+              </button>
+            )}
+            {globalRss?.enabled && onUploadGlobalRss && (
+              <button
+                className="push-btn push-btn-rss"
+                onClick={handleUploadGlobalRss}
+                disabled={uploadingGlobalRss || checkedCount === 0}
+                style={{ background: '#e67e22', borderColor: '#e67e22' }}
+              >
+                {uploadingGlobalRss ? '上传中...' : `全局 RSS (${checkedCount})`}
               </button>
             )}
             <button

@@ -606,12 +606,37 @@ textarea {
   overflow: hidden;
 }
 
+/* Sidebar */
+.sidebar-nav .sidebar-nav-item:hover {
+  background: var(--bg-tertiary) !important;
+  color: var(--text) !important;
+}
+
+.sidebar-nav .sidebar-nav-item.active:hover {
+  background: rgba(88, 166, 255, 0.15) !important;
+  color: var(--accent) !important;
+}
+
+/* Sidebar Toggle Button */
+.sidebar-toggle-btn {
+  transition: all 0.2s;
+}
+
+.sidebar-toggle-btn:hover {
+  border-color: var(--accent) !important;
+}
+
+.sidebar-toggle-btn.active {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+  background: rgba(88, 166, 255, 0.1) !important;
+}
+
 /* Config Panel */
 .config-panel {
-  width: 300px;
-  flex-shrink: 0;
-  background: var(--bg-secondary);
-  border-right: 1px solid var(--border);
+  width: 100%;
+  background: transparent;
+  border-right: none;
   padding: 16px;
   overflow-y: auto;
   animation: section-reveal 0.18s ease;
@@ -1906,10 +1931,8 @@ textarea {
    ============================================ */
 
 .email-push-panel {
-  width: 320px;
-  min-width: 320px;
-  background: var(--bg-secondary);
-  border-right: 1px solid var(--border);
+  width: 100%;
+  background: transparent;
   display: flex;
   flex-direction: column;
   overflow-y: auto;
@@ -2454,13 +2477,20 @@ textarea {
   border: 1px solid var(--border);
 }
 
+/* SMTP Settings Panel */
+.smtp-settings-panel {
+  width: 100%;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
 /* Prompt Editor Panel */
 .prompt-editor-panel {
-  width: 380px;
-  min-width: 380px;
+  width: 100%;
   flex-shrink: 0;
-  background: var(--bg-secondary);
-  border-right: 1px solid var(--border);
+  background: transparent;
   display: flex;
   flex-direction: column;
   overflow-y: hidden;

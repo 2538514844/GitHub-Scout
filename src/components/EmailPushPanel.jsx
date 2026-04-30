@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 
 const DEFAULT_CRAWL_CONFIG = {
   keyword: '',
@@ -19,11 +19,6 @@ function newAccount() {
   return {
     id: generateId(),
     name: '',
-    smtpHost: '',
-    smtpPort: 587,
-    smtpUser: '',
-    smtpPass: '',
-    useTls: true,
     crawlConfig: { ...DEFAULT_CRAWL_CONFIG },
     recipients: [],
     rssConfig: {
@@ -47,11 +42,13 @@ export default function EmailPushPanel({
   onOpenEditor,
   crawlingAccountId,
   loading,
+  globalSmtp,
+  onOpenSmtpSettings,
+  globalRss,
+  onOpenRssSettings,
 }) {
   const [activeId, setActiveId] = useState(() => (accounts.length > 0 ? accounts[0].id : null));
   const [editDraft, setEditDraft] = useState(null);
-  const [testResult, setTestResult] = useState(null);
-  const [testing, setTesting] = useState(false);
   const [recipientInput, setRecipientInput] = useState('');
   const [savedFlag, setSavedFlag] = useState(null);
 
@@ -63,7 +60,6 @@ export default function EmailPushPanel({
     } else {
       setEditDraft(null);
     }
-    setTestResult(null);
   }, [activeId, accounts]);
 
   const updateDraft = useCallback(
@@ -95,7 +91,6 @@ export default function EmailPushPanel({
 
   const handleSelectAccount = useCallback((id) => {
     setActiveId(id);
-    setTestResult(null);
   }, []);
 
   const handleAddAccount = useCallback(() => {
@@ -123,29 +118,6 @@ export default function EmailPushPanel({
     setSavedFlag(Date.now());
     setTimeout(() => setSavedFlag(null), 1500);
   }, [editDraft, accounts, onUpdateAccounts]);
-
-  const handleTestWithConfig = useCallback(async () => {
-    if (!editDraft) return;
-    setTesting(true);
-    setTestResult(null);
-    try {
-      const result = await window.electronAPI.testEmailSmtp({
-        accountId: editDraft.id,
-        tempAccount: {
-          smtpHost: editDraft.smtpHost,
-          smtpPort: editDraft.smtpPort,
-          smtpUser: editDraft.smtpUser,
-          smtpPass: editDraft.smtpPass,
-          useTls: editDraft.useTls,
-        },
-      });
-      setTestResult(result);
-    } catch (e) {
-      setTestResult({ ok: false, message: e.message });
-    } finally {
-      setTesting(false);
-    }
-  }, [editDraft]);
 
   const handleCrawl = useCallback(() => {
     if (!activeAccount) return;
@@ -233,9 +205,9 @@ export default function EmailPushPanel({
       {/* Account Editor */}
       {editDraft && (
         <div className="email-push-form">
-          {/* SMTP Settings */}
+          {/* Account Name */}
           <details className="email-push-section" open>
-            <summary>邮箱设置</summary>
+            <summary>账户名称</summary>
             <label>
               <span>发件名称</span>
               <input
@@ -245,64 +217,35 @@ export default function EmailPushPanel({
                 placeholder="如：我的 Gmail"
               />
             </label>
-            <label>
-              <span>SMTP 服务器</span>
-              <input
-                type="text"
-                value={editDraft.smtpHost}
-                onChange={(e) => updateDraft('smtpHost', e.target.value)}
-                placeholder="smtp.gmail.com"
-              />
-            </label>
-            <label>
-              <span>端口</span>
-              <input
-                type="number"
-                value={editDraft.smtpPort}
-                onChange={(e) => updateDraft('smtpPort', parseInt(e.target.value, 10) || 587)}
-              />
-            </label>
-            <label>
-              <span>用户名</span>
-              <input
-                type="text"
-                value={editDraft.smtpUser}
-                onChange={(e) => updateDraft('smtpUser', e.target.value)}
-                placeholder="your-email@gmail.com"
-              />
-            </label>
-            <label>
-              <span>密码 / 应用专用密码</span>
-              <input
-                type="password"
-                value={editDraft.smtpPass}
-                onChange={(e) => updateDraft('smtpPass', e.target.value)}
-                placeholder="SMTP 密码"
-              />
-            </label>
-            <label className="email-push-checkbox-label">
-              <input
-                type="checkbox"
-                checked={editDraft.useTls}
-                onChange={(e) => updateDraft('useTls', e.target.checked)}
-              />
-              <span>使用 TLS</span>
-            </label>
-            <div className="email-push-test-row">
+          </details>
+
+          {/* Global SMTP Indicator */}
+          <div style={{
+            padding: '8px 12px', marginBottom: 8, borderRadius: 6,
+            background: 'rgba(88, 166, 255, 0.06)', border: '1px solid rgba(88, 166, 255, 0.12)',
+            fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontWeight: 600, color: 'var(--accent)' }}>📧 SMTP 全局设置</span>
               <button
-                className="push-btn push-btn-test"
-                onClick={handleTestWithConfig}
-                disabled={testing || !editDraft.smtpHost}
+                className="push-btn push-btn-sm"
+                onClick={onOpenSmtpSettings}
+                style={{ fontSize: 10 }}
               >
-                {testing ? '测试中...' : '测试连接'}
+                配置
               </button>
-              {testResult && (
-                <span className={`push-test-msg ${testResult.ok ? 'ok' : 'fail'}`}>
-                  {testResult.ok ? '✓ 成功' : `✗ ${testResult.message}`}
-                </span>
+            </div>
+            <div style={{ marginTop: 4 }}>
+              {globalSmtp?.host ? (
+                <>
+                  <div>服务器: {globalSmtp.host}:{globalSmtp.port}</div>
+                  <div>用户: {globalSmtp.user || '(未设置)'}</div>
+                </>
+              ) : (
+                <span style={{ color: 'var(--accent-orange)' }}>⚠ 尚未配置 SMTP</span>
               )}
             </div>
-          </details>
+          </div>
 
           {/* Crawl Settings */}
           <details className="email-push-section">
@@ -401,16 +344,16 @@ export default function EmailPushPanel({
             </div>
           </details>
 
-          {/* RSS Feed Settings */}
+          {/* RSS Feed Settings (per-account) */}
           <details className="email-push-section">
-            <summary>RSS 订阅设置</summary>
+            <summary>RSS 订阅设置（本账户）</summary>
             <label className="email-push-checkbox-label">
               <input
                 type="checkbox"
                 checked={editDraft.rssConfig?.enabled || false}
                 onChange={(e) => updateRss('enabled', e.target.checked)}
               />
-              <span>启用 RSS 输出</span>
+              <span>启用独立 RSS 输出</span>
             </label>
             {(editDraft.rssConfig?.enabled) && (
               <>

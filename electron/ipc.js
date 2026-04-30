@@ -4006,9 +4006,47 @@ const EMAIL_PUSH_CONFIG_FILE = path.join(DATA_DIR, 'email-push-config.json');
 
 function loadEmailPushConfig() {
   try {
-    return JSON.parse(fs.readFileSync(EMAIL_PUSH_CONFIG_FILE, 'utf-8'));
+    const raw = JSON.parse(fs.readFileSync(EMAIL_PUSH_CONFIG_FILE, 'utf-8'));
+    let changed = false;
+    // Migration: if any account still has smtpHost, extract to global smtp
+    if (raw.accounts && raw.accounts.length > 0 && raw.accounts[0].smtpHost !== undefined) {
+      const firstAccount = raw.accounts[0];
+      raw.smtp = {
+        host: firstAccount.smtpHost || '',
+        port: firstAccount.smtpPort || 587,
+        user: firstAccount.smtpUser || '',
+        pass: firstAccount.smtpPass || '',
+        useTls: firstAccount.useTls !== false,
+      };
+      raw.accounts = raw.accounts.map((a) => {
+        const { smtpHost, smtpPort, smtpUser, smtpPass, useTls, ...rest } = a;
+        return rest;
+      });
+      changed = true;
+      log('[个人推送] 已自动迁移旧配置格式: SMTP 升级为全局统一设置', 'success');
+    }
+    if (!raw.smtp) {
+      raw.smtp = { host: '', port: 587, user: '', pass: '', useTls: true };
+      changed = true;
+    }
+    // Add global RSS default if not present (per-account RSS coexists independently)
+    if (!raw.rss) {
+      raw.rss = {
+        enabled: false, repo: '', branch: 'main', filePath: 'feed.xml',
+        commitMessage: 'Update RSS feed', title: '', description: '', link: '', publicUrl: '',
+      };
+      changed = true;
+    }
+    if (changed) {
+      fs.writeFileSync(EMAIL_PUSH_CONFIG_FILE, JSON.stringify(raw, null, 2));
+    }
+    return raw;
   } catch {
-    return { accounts: [] };
+    return {
+      smtp: { host: '', port: 587, user: '', pass: '', useTls: true },
+      rss: { enabled: false, repo: '', branch: 'main', filePath: 'feed.xml', commitMessage: 'Update RSS feed', title: '', description: '', link: '', publicUrl: '' },
+      accounts: [],
+    };
   }
 }
 
@@ -4053,22 +4091,22 @@ function buildEmailBody(accountName, repos) {
   ].join('');
 }
 
-async function sendEmailViaSmtp(account, repos) {
+async function sendEmailViaSmtp(smtpConfig, account, repos) {
   log(`[个人推送] 准备发送 ${repos.length} 个仓库到 ${account.recipients.length} 个收件人`, 'info');
-  log(`[个人推送] SMTP: ${account.smtpHost}:${account.smtpPort}, 用户: ${account.smtpUser}`, 'info');
+  log(`[个人推送] SMTP: ${smtpConfig.host}:${smtpConfig.port}, 用户: ${smtpConfig.user}`, 'info');
 
   let transporter;
   try {
     log(`[个人推送] 正在连接 SMTP 服务器...`, 'info');
     transporter = nodemailer.createTransport({
-      host: account.smtpHost,
-      port: account.smtpPort,
-      secure: account.smtpPort === 465,
+      host: smtpConfig.host,
+      port: smtpConfig.port,
+      secure: smtpConfig.port === 465,
       auth: {
-        user: account.smtpUser,
-        pass: account.smtpPass,
+        user: smtpConfig.user,
+        pass: smtpConfig.pass,
       },
-      tls: account.useTls !== false ? { rejectUnauthorized: false } : undefined,
+      tls: smtpConfig.useTls !== false ? { rejectUnauthorized: false } : undefined,
       connectionTimeout: 15000,
       greetingTimeout: 10000,
     });
@@ -4088,7 +4126,7 @@ async function sendEmailViaSmtp(account, repos) {
     log(`[个人推送] [${i + 1}/${account.recipients.length}] 正在发送至 ${recipient}...`, 'info');
     try {
       const info = await transporter.sendMail({
-        from: `"GitHub Scout" <${account.smtpUser}>`,
+        from: `"GitHub Scout" <${smtpConfig.user}>`,
         to: recipient,
         subject,
         html,
@@ -4104,18 +4142,18 @@ async function sendEmailViaSmtp(account, repos) {
   return results;
 }
 
-async function testSmtpConnection(account) {
+async function testSmtpConnection(smtpConfig) {
   try {
     const transporter = nodemailer.createTransport({
-      host: account.smtpHost,
-      port: account.smtpPort,
-      secure: account.smtpPort === 465,
-      auth: { user: account.smtpUser, pass: account.smtpPass },
+      host: smtpConfig.host,
+      port: smtpConfig.port,
+      secure: smtpConfig.port === 465,
+      auth: { user: smtpConfig.user, pass: smtpConfig.pass },
       connectionTimeout: 10000,
       greetingTimeout: 10000,
     });
     await transporter.verify();
-    return { ok: true, message: `${account.smtpHost}:${account.smtpPort} 连接成功` };
+    return { ok: true, message: `${smtpConfig.host}:${smtpConfig.port} 连接成功` };
   } catch (e) {
     return { ok: false, message: e.message };
   }
@@ -4136,20 +4174,21 @@ function handleSaveEmailPushConfig(config) {
   }
 }
 
-async function handleEmailPushTestSmtp(payload) {
-  const config = loadEmailPushConfig();
-  let account = (config.accounts || []).find((a) => a.id === payload.accountId);
-  // Support testing with unsaved draft settings
-  if (payload.tempAccount) {
-    account = { ...account, ...payload.tempAccount };
+async function handleEmailPushTestSmtp(smtpConfig) {
+  if (!smtpConfig || !smtpConfig.host) {
+    return { ok: false, message: '请先配置 SMTP 服务器信息' };
   }
-  if (!account) return { ok: false, message: '未找到指定邮箱账户' };
-  return testSmtpConnection(account);
+  return testSmtpConnection(smtpConfig);
 }
 
 async function handleEmailPushSend(payload) {
   log(`[个人推送] 开始发送流程...`, 'info');
   const config = loadEmailPushConfig();
+  const smtp = config.smtp;
+  if (!smtp || !smtp.host) {
+    log(`[个人推送] 发送失败: 未配置全局 SMTP 设置`, 'error');
+    return { ok: false, message: '请先在 SMTP 设置中配置邮件服务器' };
+  }
   const account = (config.accounts || []).find((a) => a.id === payload.accountId);
   if (!account) {
     log(`[个人推送] 发送失败: 未找到指定邮箱账户 ${payload.accountId}`, 'error');
@@ -4165,7 +4204,7 @@ async function handleEmailPushSend(payload) {
   }
 
   log(`[个人推送] 发送配置: 账户=${account.name}, 仓库数=${payload.repos.length}, 收件人数=${account.recipients.length}`, 'info');
-  const results = await sendEmailViaSmtp(account, payload.repos);
+  const results = await sendEmailViaSmtp(smtp, account, payload.repos);
   const okCount = results.filter((r) => r.ok).length;
   const failCount = results.filter((r) => !r.ok).length;
   log(`[个人推送] 发送完成: 成功 ${okCount}, 失败 ${failCount}`, okCount > 0 ? 'success' : 'error');
@@ -4314,6 +4353,11 @@ function buildRssXml(account, repos) {
 
 function computeRssPublicUrl(account) {
   const rssConfig = account.rssConfig || {};
+  return computeRssPublicUrlFromConfig(rssConfig);
+}
+
+function computeRssPublicUrlFromConfig(rssConfig) {
+  if (!rssConfig) return '';
   if (rssConfig.publicUrl && rssConfig.publicUrl.trim()) {
     return rssConfig.publicUrl.trim();
   }
@@ -4330,6 +4374,51 @@ function computeRssPublicUrl(account) {
     return `https://${repoName}/${filePath}`;
   }
   return `https://raw.githubusercontent.com/${owner}/${repoName}/${branch}/${filePath}`;
+}
+
+function buildRssXmlFromConfig(rssConfig, feedName, repos) {
+  const title = escapeXml(rssConfig.title || `GitHub Scout - ${feedName || '推送'}`);
+  const description = escapeXml(rssConfig.description || 'GitHub 仓库推送');
+  const link = escapeXml(rssConfig.link || 'https://github.com');
+  const buildDate = toRfc822Date();
+
+  const items = repos.map((r) => {
+    const tags = (r.aiTags && r.aiTags.length > 0) ? r.aiTags.join(', ') : '';
+    const desc = r.aiDescription || r.description || '';
+    const repoLink = r.url || `https://github.com/${r.name}`;
+    const pubDate = toRfc822Date(r.created || r.updated);
+
+    const descHtml = [
+      tags ? `<p><strong>标签:</strong> ${escapeXml(tags)}</p>` : '',
+      desc ? `<p>${escapeXml(desc)}</p>` : '',
+      `<p>⭐ ${r.stars || 0} | 🍴 ${r.forks || 0} | ${escapeXml(r.language || 'N/A')}</p>`,
+    ].filter(Boolean).join('\n          ');
+
+    return [
+      '    <item>',
+      `      <title>${escapeXml(r.name)}</title>`,
+      `      <link>${escapeXml(repoLink)}</link>`,
+      `      <description>${descHtml}</description>`,
+      `      <pubDate>${pubDate}</pubDate>`,
+      `      <guid isPermaLink="true">${escapeXml(repoLink)}</guid>`,
+      '    </item>',
+    ].join('\n');
+  }).join('\n');
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">',
+    '  <channel>',
+    `    <title>${title}</title>`,
+    `    <description>${description}</description>`,
+    `    <link>${escapeXml(link)}</link>`,
+    `    <lastBuildDate>${buildDate}</lastBuildDate>`,
+    `    <generator>GitHub Scout</generator>`,
+    `    <atom:link href="${escapeXml(link)}" rel="self" type="application/rss+xml"/>`,
+    items,
+    '  </channel>',
+    '</rss>',
+  ].join('\n');
 }
 
 async function handlePushRssUpload(payload) {
@@ -4431,6 +4520,161 @@ async function handlePushRssUpload(payload) {
     log(`[个人推送 RSS] 上传异常: ${e.message}`, 'error');
     return { ok: false, message: `上传异常: ${e.message}` };
   }
+}
+
+// --- Global RSS Upload ---
+
+async function handlePushGlobalRssUpload(payload) {
+  const config = loadEmailPushConfig();
+  const rssConfig = config.rss;
+  if (!rssConfig || !rssConfig.enabled) {
+    return { ok: false, message: '请先在 RSS 全局设置中启用并配置 RSS' };
+  }
+  if (!payload.repos || payload.repos.length === 0) {
+    return { ok: false, message: '没有要上传的仓库' };
+  }
+  const repo = (rssConfig.repo || '').trim();
+  if (!repo || !repo.includes('/')) {
+    return { ok: false, message: '请在 RSS 设置中填写目标仓库（格式：owner/repo）' };
+  }
+
+  const auth = loadAuth();
+  const token = auth?.token;
+  if (!token) {
+    return { ok: false, message: '请先在 GitHub 登录中完成认证（需要 repo 权限的 PAT）' };
+  }
+
+  const rssXml = buildRssXmlFromConfig(rssConfig, rssConfig.title || 'Global', payload.repos);
+  const branch = (rssConfig.branch || 'main').trim();
+  const filePath = (rssConfig.filePath || 'feed.xml').trim().replace(/^\//, '');
+  const commitMessage = (rssConfig.commitMessage || 'Update RSS feed').trim();
+  const [owner, repoName] = repo.split('/').map((s) => s.trim());
+  const apiPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/contents/${encodeURIComponent(filePath)}`;
+
+  log(`[全局 RSS] 开始上传到 ${repo}/${filePath} (${payload.repos.length} 个仓库)...`, 'info');
+
+  let sha = null;
+  try {
+    const getRes = await httpsGet(
+      `https://api.github.com${apiPath}?ref=${encodeURIComponent(branch)}`,
+      buildGitHubHeaders(token),
+    );
+    if (getRes.statusCode === 200) {
+      const parsed = parseJsonSafely(getRes.data);
+      if (parsed?.sha) sha = parsed.sha;
+      log(`[全局 RSS] 检测到已有文件，将更新 (SHA: ${sha?.slice(0, 8)}...)`, 'info');
+    } else if (getRes.statusCode === 404) {
+      log('[全局 RSS] 目标文件不存在，将创建新文件', 'info');
+    } else {
+      log(`[全局 RSS] 获取文件信息返回 ${getRes.statusCode}，继续尝试上传`, 'warn');
+    }
+  } catch (e) {
+    log(`[全局 RSS] 获取文件信息失败: ${e.message}，继续尝试上传`, 'warn');
+  }
+
+  const body = {
+    message: commitMessage,
+    content: Buffer.from(rssXml, 'utf-8').toString('base64'),
+    branch,
+  };
+  if (sha) body.sha = sha;
+
+  try {
+    const putRes = await httpsRequest(
+      `https://api.github.com${apiPath}`,
+      { headers: buildGitHubHeaders(token) },
+      JSON.stringify(body),
+      'PUT',
+    );
+
+    if (putRes.statusCode === 201 || putRes.statusCode === 200) {
+      const publicUrl = computeRssPublicUrlFromConfig(rssConfig);
+      log(`[全局 RSS] 上传成功 (HTTP ${putRes.statusCode})`, 'success');
+      log(`[全局 RSS] 公开地址: ${publicUrl}`, 'info');
+      return {
+        ok: true,
+        filePath,
+        repo,
+        branch,
+        publicUrl: publicUrl || `https://github.com/${repo}/blob/${branch}/${filePath}`,
+        status: sha ? 'updated' : 'created',
+      };
+    }
+
+    const parsed = parseJsonSafely(putRes.data);
+    const msg = parsed?.message || `HTTP ${putRes.statusCode}`;
+    log(`[全局 RSS] 上传失败: ${msg}`, 'error');
+
+    if (putRes.statusCode === 401 || putRes.statusCode === 403) {
+      return { ok: false, message: `上传失败 (${msg})。请确认 GitHub Token 拥有 repo 权限，且你有该仓库的写入权限。` };
+    }
+    if (putRes.statusCode === 404) {
+      return { ok: false, message: `仓库 ${repo} 不存在或分支 ${branch} 不存在` };
+    }
+    if (putRes.statusCode === 422) {
+      return { ok: false, message: `上传失败: ${msg}` };
+    }
+    return { ok: false, message: `上传失败: ${msg}` };
+  } catch (e) {
+    log(`[全局 RSS] 上传异常: ${e.message}`, 'error');
+    return { ok: false, message: `上传异常: ${e.message}` };
+  }
+}
+
+function handleLoadGlobalRss() {
+  const config = loadEmailPushConfig();
+  return { ok: true, rss: config.rss || { enabled: false, repo: '', branch: 'main', filePath: 'feed.xml', commitMessage: 'Update RSS feed', title: '', description: '', link: '', publicUrl: '' } };
+}
+
+function handleSaveGlobalRss(rssConfig) {
+  try {
+    const config = loadEmailPushConfig();
+    config.rss = {
+      enabled: rssConfig.enabled !== false,
+      repo: rssConfig.repo || '',
+      branch: rssConfig.branch || 'main',
+      filePath: rssConfig.filePath || 'feed.xml',
+      commitMessage: rssConfig.commitMessage || 'Update RSS feed',
+      title: rssConfig.title || '',
+      description: rssConfig.description || '',
+      link: rssConfig.link || '',
+      publicUrl: rssConfig.publicUrl || '',
+    };
+    saveEmailPushConfig(config);
+    log('[全局 RSS] 设置已保存', 'success');
+    return { ok: true };
+  } catch (e) {
+    log(`[全局 RSS] 保存失败: ${e.message}`, 'error');
+    return { ok: false, message: e.message };
+  }
+}
+
+function handleLoadGlobalSmtp() {
+  const config = loadEmailPushConfig();
+  return { ok: true, smtp: config.smtp || { host: '', port: 587, user: '', pass: '', useTls: true } };
+}
+
+function handleSaveGlobalSmtp(smtpConfig) {
+  try {
+    const config = loadEmailPushConfig();
+    config.smtp = {
+      host: smtpConfig.host || '',
+      port: smtpConfig.port || 587,
+      user: smtpConfig.user || '',
+      pass: smtpConfig.pass || '',
+      useTls: smtpConfig.useTls !== false,
+    };
+    saveEmailPushConfig(config);
+    log('[个人推送] 全局SMTP设置已保存', 'success');
+    return { ok: true };
+  } catch (e) {
+    log(`[个人推送] 全局SMTP保存失败: ${e.message}`, 'error');
+    return { ok: false, message: e.message };
+  }
+}
+
+function handleTestGlobalSmtp(smtpConfig) {
+  return testSmtpConnection(smtpConfig);
 }
 
 function handleLoadAllPrompts() {
@@ -4561,6 +4805,8 @@ module.exports = {
   handleLoadEmailPushConfig, handleSaveEmailPushConfig,
   handleEmailPushTestSmtp, handleEmailPushSend, handleEmailPushCrawl,
   handlePushRssUpload, computeRssPublicUrl,
+  handleLoadGlobalSmtp, handleSaveGlobalSmtp, handleTestGlobalSmtp,
+  handlePushGlobalRssUpload, handleLoadGlobalRss, handleSaveGlobalRss,
   handleLoadAllPrompts, handleSavePrompt, handleResetPrompt,
   handleGetPromptHistory, handleRollbackPrompt,
   logEmitter, log,

@@ -26,6 +26,12 @@ const {
   handleEmailPushSend,
   handleEmailPushCrawl,
   handlePushRssUpload,
+  handleLoadGlobalSmtp,
+  handleSaveGlobalSmtp,
+  handleTestGlobalSmtp,
+  handlePushGlobalRssUpload,
+  handleLoadGlobalRss,
+  handleSaveGlobalRss,
   handleLoadAllPrompts,
   handleSavePrompt,
   handleResetPrompt,
@@ -436,10 +442,20 @@ app.whenReady().then(() => {
 
   ipcMain.handle('push-email-load-config', () => handleLoadEmailPushConfig());
   ipcMain.handle('push-email-save-config', (_, config) => handleSaveEmailPushConfig(config));
-  ipcMain.handle('push-email-test-smtp', (_, payload) => handleEmailPushTestSmtp(payload));
+  ipcMain.handle('push-email-test-smtp', (_, smtpConfig) => handleEmailPushTestSmtp(smtpConfig));
   ipcMain.handle('push-email-send', (_, payload) => handleEmailPushSend(payload));
   ipcMain.handle('push-email-crawl', (_, payload) => handleEmailPushCrawl(payload, mainWindow));
   ipcMain.handle('push-rss-upload', (_, payload) => handlePushRssUpload(payload));
+
+  // Global SMTP settings
+  ipcMain.handle('push-global-smtp-load', () => handleLoadGlobalSmtp());
+  ipcMain.handle('push-global-smtp-save', (_, smtpConfig) => handleSaveGlobalSmtp(smtpConfig));
+  ipcMain.handle('push-global-smtp-test', (_, smtpConfig) => handleTestGlobalSmtp(smtpConfig));
+
+  // Global RSS settings
+  ipcMain.handle('push-global-rss-load', () => handleLoadGlobalRss());
+  ipcMain.handle('push-global-rss-save', (_, rssConfig) => handleSaveGlobalRss(rssConfig));
+  ipcMain.handle('push-global-rss-upload', (_, payload) => handlePushGlobalRssUpload(payload));
 
   ipcMain.handle('load-all-prompts', () => handleLoadAllPrompts());
   ipcMain.handle('save-prompt', (_, key, text) => handleSavePrompt(key, text));

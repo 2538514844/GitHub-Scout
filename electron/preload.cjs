@@ -26,10 +26,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Email push
   loadEmailPushConfig: () => ipcRenderer.invoke('push-email-load-config'),
   saveEmailPushConfig: (config) => ipcRenderer.invoke('push-email-save-config', config),
-  testEmailSmtp: (payload) => ipcRenderer.invoke('push-email-test-smtp', payload),
+  testEmailSmtp: (smtpConfig) => ipcRenderer.invoke('push-email-test-smtp', smtpConfig),
   sendEmail: (payload) => ipcRenderer.invoke('push-email-send', payload),
   crawlForEmail: (payload) => ipcRenderer.invoke('push-email-crawl', payload),
   uploadRssFeed: (payload) => ipcRenderer.invoke('push-rss-upload', payload),
+
+  // Global SMTP
+  loadGlobalSmtp: () => ipcRenderer.invoke('push-global-smtp-load'),
+  saveGlobalSmtp: (smtpConfig) => ipcRenderer.invoke('push-global-smtp-save', smtpConfig),
+  testGlobalSmtp: (smtpConfig) => ipcRenderer.invoke('push-global-smtp-test', smtpConfig),
+
+  // Global RSS
+  loadGlobalRss: () => ipcRenderer.invoke('push-global-rss-load'),
+  saveGlobalRss: (rssConfig) => ipcRenderer.invoke('push-global-rss-save', rssConfig),
+  pushGlobalRss: (payload) => ipcRenderer.invoke('push-global-rss-upload', payload),
 
   // Prompt editor
   loadAllPrompts: () => ipcRenderer.invoke('load-all-prompts'),
