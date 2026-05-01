@@ -226,7 +226,7 @@ export default function EmailPushPanel({
             fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6,
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontWeight: 600, color: 'var(--accent)' }}>📧 SMTP 全局设置</span>
+              <span style={{ fontWeight: 600, color: 'var(--accent)' }}><span className="material-icons" style={{ fontSize: 14, verticalAlign: 'text-bottom' }}>mail</span> SMTP 全局设置</span>
               <button
                 className="push-btn push-btn-sm"
                 onClick={onOpenSmtpSettings}
@@ -242,7 +242,7 @@ export default function EmailPushPanel({
                   <div>用户: {globalSmtp.user || '(未设置)'}</div>
                 </>
               ) : (
-                <span style={{ color: 'var(--accent-orange)' }}>⚠ 尚未配置 SMTP</span>
+                <span style={{ color: 'var(--accent-orange)' }}>! 尚未配置 SMTP</span>
               )}
             </div>
           </div>

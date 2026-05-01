@@ -253,8 +253,8 @@ export default function EmailPushEditor({ account, repos = [], onClose, onSend, 
                         )}
                       </td>
                       <td>{repo.language || 'N/A'}</td>
-                      <td>⭐ {repo.stars}</td>
-                      <td>🍴 {repo.forks}</td>
+                      <td><span className="material-icons" style={{ fontSize: 13, verticalAlign: 'text-bottom' }}>star</span> {repo.stars}</td>
+                      <td><span className="material-icons" style={{ fontSize: 13, verticalAlign: 'text-bottom' }}>call_split</span> {repo.forks}</td>
                       <td>{repo.created}</td>
                       <td className="repo-desc">{repo.aiDescription || repo.description}</td>
                       <td>

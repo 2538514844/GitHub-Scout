@@ -56,7 +56,7 @@ All backend logic lives here. Key modules when read top-to-bottom:
 - **Global SMTP**: `data/email-push-config.json` stores a top-level `smtp` object with host/port/user/pass/useTls shared across all push accounts. Old per-account SMTP fields are auto-migrated on first load. IPC channels: `push-global-smtp-load`, `push-global-smtp-save`, `push-global-smtp-test`.
 - **Global RSS**: `data/email-push-config.json` stores a top-level `rss` object with enabled/repo/branch/filePath/commitMessage/title/description/link/publicUrl. Old per-account RSS configs are auto-migrated on first load. IPC channels: `push-global-rss-load`, `push-global-rss-save`, `push-global-rss-upload`. Global RSS upload pushes repos directly to the configured GitHub repo via Contents API.
 - **Prompt overrides**: `resolvePrompt(key, default)` checks `data/prompts.json` for user overrides before falling back to hardcoded defaults. All 16 prompt registry entries use this. Template prompts store literal `${var}` placeholders substituted via `.replace()` at runtime. Each save creates a version history entry in `data/prompts-history.json`, supporting per-prompt rollback.
-- **Data persistence**: JSON files in `data/` — `settings.json` (AI config), `auth.json` (GitHub token), `repo_analysis.json` (analysis history), `email-push-config.json` (SMTP accounts, recipients, crawl settings), `prompts.json` (AI prompt overrides), `prompts-history.json` (version history per prompt key), `presentation-settings.json` (TTS config + playlist), `tts-cache/` (cached TTS audio), `readme-carousel-runs/` (generated carousel HTML sessions)
+- **Data persistence**: JSON files in `data/` — `settings.json` (AI config), `auth.json` (GitHub token), `repo_analysis.json` (analysis history), `email-push-config.json` (SMTP accounts, recipients, crawl settings), `prompts.json` (AI prompt overrides), `prompts-history.json` (version history per prompt key), `presentation-settings.json` (TTS config + playlist), `tts-cache/` (cached TTS audio), `readme-carousel-runs/` (generated carousel HTML sessions), `fonts/` (base64 font files for offline carousel rendering)
 - **Video transcode**: `main.js` includes a WebM→MP4 ffmpeg pipeline using `ffmpeg-static`. `electron-builder.json` has `asarUnpack` for `node_modules/ffmpeg-static/**/*` — ffmpeg can't run from within an asar archive
 
 **`electron/presentation.js`** (~650 lines) — Standalone TTS and slideshow manager:
@@ -73,7 +73,7 @@ All backend logic lives here. Key modules when read top-to-bottom:
 
 | Component | Purpose |
 |---|---|
-| `App.jsx` | Main orchestrator — state for repos, analysis, AI config, auth, logs, sidebar navigation. Uses `activeSidebarTab` (null/'config'/'email-push'/'smtp'/'prompts') instead of individual toggle booleans. |
+| `App.jsx` | Main orchestrator — state for repos, analysis, AI config, auth, logs, sidebar navigation. Uses `activeSidebarTab` (null/'config'/'email-push'/'smtp'/'rss'/'prompts') instead of individual toggle booleans. |
 | `Sidebar.jsx` | Left sidebar with nav items (AI配置/个人推送/SMTP设置/RSS设置/提示词). Only one panel active at a time. |
 | `ConfigPanel.jsx` | AI provider configuration (base URL, API key, model) with presets for OpenAI, Claude, SiliconFlow, DeepSeek, Zhipu, Ollama, Custom. Includes connection test button. |
 | `RepoTable.jsx` | Displays fetched repos in a table with selection, CSV export |
@@ -193,10 +193,21 @@ All backend logic lives here. Key modules when read top-to-bottom:
 - Recorder data flow: `MediaRecorder` API in `recorder-preload.cjs` captures screen as WebM → `save-recorded-video` handler in `main.js` transcodes to MP4 via `ffmpeg-static` (4K, x264 CRF 18, AAC 320k). The `asarUnpack` in `electron-builder.json` is required because ffmpeg can't run from within an asar archive
 
 **RSS & Email Push**
-- Each account in `email-push-config.json` can have both SMTP fields and an `rssConfig` object — both channels coexist in one config, and the editor shows both output buttons when RSS is enabled
+- SMTP and RSS settings are **global** (top-level `smtp` and `rss` objects in `email-push-config.json`), not per-account. Old per-account SMTP/RSS fields are auto-migrated to the top level on first load. Each account in `accounts[]` stores only name, recipients, and crawlConfig.
 - RSS upload: `httpsRequest` accepts optional 4th arg `method` (defaults to `'POST'`, RSS uses `'PUT'`). `buildRssXml` generates RSS 2.0 XML with `escapeXml`/`toRfc822Date` helpers. `computeRssPublicUrl` auto-detects GitHub Pages vs raw URL from repo name. Upload requires GitHub PAT with `repo` scope — the existing auth token from `data/auth.json` is reused
 
 **UI**
 - The frameless window has custom title bar controls exposed via IPC (`minimize`/`maximize`/`close`). Recorder windows also expose `close-current-window`
 - Sound effects use an Audio element pool (3 instances) with throttling (min interval per variant)
 - Sidebar navigation: `App.jsx` uses a single `activeSidebarTab` state instead of individual `showConfig`/`showEmailPush`/`showPromptEditor` booleans. `Sidebar.jsx` renders the nav + content slot. Clicking a nav item toggles the panel; clicking the active item closes the sidebar. Header has a single "侧栏" hamburger button replacing the old AI配置/个人推送/提示词 individual toggles.
+- **Icons**: Always use Google Material Icons (classic `material-icons` font), NOT `material-symbols-rounded`. The font is preloaded in `index.html` via `<link href="https://fonts.googleapis.com/icon?family=Material+Icons">`. Usage: `<span className="material-icons" style={{ fontSize: 14 }}>icon_name</span>`. Do NOT use variable fonts (Material Symbols) — they require `font-variation-settings` that won't work without extra CSS. For static HTML (email body, RSS), include the same Google Fonts link in `<head>`. Current icon mapping in the project:
+
+| Context | Icon Name | Meaning |
+|---|---|---|
+| Sidebar | `tune` | AI 配置 |
+| Sidebar | `mail` | 个人推送 |
+| Sidebar | `send` | SMTP 设置 |
+| Sidebar | `rss_feed` | RSS 设置 |
+| Sidebar | `edit_note` | 提示词 |
+| Data labels | `star` | Stars |
+| Data labels | `call_split` | Forks (git branch icon) |

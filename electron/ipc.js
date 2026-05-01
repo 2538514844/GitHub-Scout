@@ -4055,40 +4055,41 @@ function saveEmailPushConfig(config) {
 }
 
 function buildEmailBody(accountName, repos) {
-  const rows = repos
+  const cards = repos
     .map((r) => {
       const tags = (r.aiTags && r.aiTags.length > 0)
         ? r.aiTags.map((t) => `<span style="display:inline-block;background:#1c2333;color:#58a6ff;padding:1px 6px;border-radius:3px;font-size:11px;margin:1px 2px">${t}</span>`).join('')
         : '';
       const desc = r.aiDescription || r.description || '';
+      const shortName = r.name || '';
       return [
-        '<tr>',
-        `<td><a href="${r.url}" style="color:#58a6ff">${r.name}</a><br>${tags}</td>`,
-        `<td>${r.language || 'N/A'}</td>`,
-        `<td>⭐ ${r.stars}</td>`,
-        `<td>🍴 ${r.forks}</td>`,
-        `<td>${r.created || ''}</td>`,
-        `<td style="max-width:350px;font-size:12px">${desc}</td>`,
-        '</tr>',
-      ].join('');
+        '<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:12px">',
+        `<div style="margin-bottom:8px"><a href="${r.url}" style="color:#58a6ff;font-size:15px;font-weight:600;text-decoration:none">${shortName}</a></div>`,
+        tags ? `<div style="margin-bottom:8px">${tags}</div>` : '',
+        desc ? `<div style="color:#8b949e;font-size:13px;margin-bottom:10px;line-height:1.5">${desc}</div>` : '',
+        '<div style="display:flex;align-items:center;gap:16px;padding-top:10px;border-top:1px solid #21262d;font-size:12px;color:#8b949e">',
+        `<span><span class="material-icons" style="font-size:12px;vertical-align:text-bottom">star</span> ${r.stars || 0}</span>`,
+        `<span><span class="material-icons" style="font-size:12px;vertical-align:text-bottom">call_split</span> ${r.forks || 0}</span>`,
+        `<span>${r.language || 'N/A'}</span>`,
+        `<span>${r.created || ''}</span>`,
+        `<a href="${r.url}" style="color:#58a6ff;text-decoration:none;margin-left:auto">${shortName}</a>`,
+        '</div>',
+        '</div>',
+      ].join('\n');
     })
-    .join('');
+    .join('\n');
 
   return [
     '<!DOCTYPE html>',
-    '<html><head><meta charset="utf-8"></head>',
+    '<html><head><meta charset="utf-8">',
+    '<link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">',
+    '</head>',
     '<body style="font-family:Arial,sans-serif;background:#0d1117;color:#e6edf3;padding:20px">',
     `<h2 style="color:#58a6ff">GitHub Scout - ${accountName} 推送</h2>`,
-    `<p>共 ${repos.length} 个仓库，${new Date().toLocaleDateString('zh-CN')} 更新</p>`,
-    '<table style="width:100%;border-collapse:collapse;font-size:13px">',
-    '<thead><tr style="background:#161b22;text-align:left">',
-    '<th style="padding:8px">仓库 / 标签</th><th style="padding:8px">语言</th><th style="padding:8px">Stars</th><th style="padding:8px">Forks</th><th style="padding:8px">创建</th><th style="padding:8px">AI 描述</th>',
-    '</tr></thead>',
-    '<tbody>',
-    rows,
-    '</tbody></table>',
+    `<p style="color:#8b949e">共 ${repos.length} 个仓库，${new Date().toLocaleDateString('zh-CN')} 更新</p>`,
+    cards,
     '</body></html>',
-  ].join('');
+  ].join('\n');
 }
 
 async function sendEmailViaSmtp(smtpConfig, account, repos) {
@@ -4318,10 +4319,11 @@ function buildRssXml(account, repos) {
     const repoLink = r.url || `https://github.com/${r.name}`;
     const pubDate = toRfc822Date(r.created || r.updated);
 
+    const shortName = r.name || '';
     const descHtml = [
       tags ? `<p><strong>标签:</strong> ${escapeXml(tags)}</p>` : '',
       desc ? `<p>${escapeXml(desc)}</p>` : '',
-      `<p>⭐ ${r.stars || 0} | 🍴 ${r.forks || 0} | ${escapeXml(r.language || 'N/A')}</p>`,
+      `<p>Stars: ${r.stars || 0} | Forks: ${r.forks || 0} | ${escapeXml(r.language || 'N/A')} | <a href="${escapeXml(repoLink)}">${escapeXml(shortName)}</a></p>`,
     ].filter(Boolean).join('\n          ');
 
     return [
@@ -4387,11 +4389,12 @@ function buildRssXmlFromConfig(rssConfig, feedName, repos) {
     const desc = r.aiDescription || r.description || '';
     const repoLink = r.url || `https://github.com/${r.name}`;
     const pubDate = toRfc822Date(r.created || r.updated);
+    const shortName = r.name || '';
 
     const descHtml = [
       tags ? `<p><strong>标签:</strong> ${escapeXml(tags)}</p>` : '',
       desc ? `<p>${escapeXml(desc)}</p>` : '',
-      `<p>⭐ ${r.stars || 0} | 🍴 ${r.forks || 0} | ${escapeXml(r.language || 'N/A')}</p>`,
+      `<p>Stars: ${r.stars || 0} | Forks: ${r.forks || 0} | ${escapeXml(r.language || 'N/A')} | <a href="${escapeXml(repoLink)}">${escapeXml(shortName)}</a></p>`,
     ].filter(Boolean).join('\n          ');
 
     return [

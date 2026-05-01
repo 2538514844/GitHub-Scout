@@ -1,10 +1,10 @@
 export default function Sidebar({ activeTab, onTabChange, accountsCount = 0, children }) {
   const tabs = [
-    { key: 'config', label: 'AI 配置', icon: '⚙' },
-    { key: 'email-push', label: '个人推送', icon: '✉', badge: accountsCount > 0 ? accountsCount : null },
-    { key: 'smtp', label: 'SMTP 设置', icon: '📧' },
-    { key: 'rss', label: 'RSS 设置', icon: '📡' },
-    { key: 'prompts', label: '提示词', icon: '📝' },
+    { key: 'config', label: 'AI 配置', icon: 'tune' },
+    { key: 'email-push', label: '个人推送', icon: 'mail', badge: accountsCount > 0 ? accountsCount : null },
+    { key: 'smtp', label: 'SMTP 设置', icon: 'send' },
+    { key: 'rss', label: 'RSS 设置', icon: 'rss_feed' },
+    { key: 'prompts', label: '提示词', icon: 'edit_note' },
   ];
 
   return (
@@ -32,7 +32,7 @@ export default function Sidebar({ activeTab, onTabChange, accountsCount = 0, chi
               textAlign: 'left', transition: 'all 0.15s',
             }}
           >
-            <span style={{ fontSize: 14 }}>{tab.icon}</span>
+            <span className="material-icons" style={{ fontSize: 16 }}>{tab.icon}</span>
             <span>{tab.label}</span>
             {tab.badge && (
               <span style={{
