@@ -4,6 +4,7 @@ export default function Sidebar({ activeTab, onTabChange, accountsCount = 0, chi
     { key: 'email-push', label: '个人推送', icon: 'mail', badge: accountsCount > 0 ? accountsCount : null },
     { key: 'smtp', label: 'SMTP 设置', icon: 'send' },
     { key: 'rss', label: 'RSS 设置', icon: 'rss_feed' },
+    { key: 'presentation', label: '固定播放器', icon: 'slideshow' },
     { key: 'prompts', label: '提示词', icon: 'edit_note' },
   ];
 

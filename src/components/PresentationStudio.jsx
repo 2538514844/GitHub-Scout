@@ -40,6 +40,7 @@ const DEFAULT_CONFIG = {
     holdAfterAudioMs: 300,
     pageLoadTimeoutMs: 8000,
   },
+  repoFooterFontSize: 14,
   playlistText: DEFAULT_PLAYLIST,
 };
 
@@ -63,6 +64,7 @@ function PresentationStudio() {
           setConfig({
             tts: { ...DEFAULT_CONFIG.tts, ...(saved.tts || {}) },
             player: { ...DEFAULT_CONFIG.player, ...(saved.player || {}) },
+            repoFooterFontSize: saved.repoFooterFontSize ?? DEFAULT_CONFIG.repoFooterFontSize,
             playlistText: saved.playlistText || DEFAULT_PLAYLIST,
           });
         }
@@ -377,6 +379,27 @@ function PresentationStudio() {
                   onChange={(event) => updatePlayerField('pageLoadTimeoutMs', Number(event.target.value))}
                 />
               </label>
+            </div>
+
+            <div className="presentation-row" style={{ marginTop: 12 }}>
+              <label>
+                <span>仓库信息栏字号 (px)</span>
+                <input
+                  type="number"
+                  min="8"
+                  max="40"
+                  step="1"
+                  value={config.repoFooterFontSize ?? 14}
+                  onChange={(event) => setConfig((c) => ({
+                    ...c,
+                    repoFooterFontSize: Number(event.target.value) || 14,
+                  }))}
+                  style={{ width: 80 }}
+                />
+              </label>
+              <span style={{ fontSize: 11, color: 'var(--text-tertiary)', alignSelf: 'center' }}>
+                控制 README 车播每页底部 Stars / Forks / 链接 的字体大小
+              </span>
             </div>
 
             <div className="presentation-hint">

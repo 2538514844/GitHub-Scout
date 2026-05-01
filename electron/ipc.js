@@ -829,10 +829,15 @@ function loadReadmeHtmlPrompt() {
     throw new Error(`提示词文件不存在或为空: ${PROMPT_FILE}`);
   }
 
-  const promptText = resolvePrompt('readmeHtmlSystemPrompt', fileContent);
+  let promptText = resolvePrompt('readmeHtmlSystemPrompt', fileContent);
   if (!promptText) {
     throw new Error(`提示词文件为空: ${PROMPT_FILE}`);
   }
+
+  // Inject repo footer font size from presentation settings
+  const presentationConfig = loadPresentationConfig();
+  const footerFontSize = presentationConfig.repoFooterFontSize || 14;
+  promptText = promptText.replace(/\$\{repoFooterFontSize\}/g, String(footerFontSize));
 
   const outputWrapper = resolvePrompt('readmeHtmlOutputWrapper',
     `### 输出包裹规则（强制）
@@ -2534,10 +2539,12 @@ async function handleFetchSelectedReadmes(repos = []) {
 
 function buildReadmeHtmlUserPrompt(repo, repoUrl, readmeResult) {
   const template = resolvePrompt('readmeHtmlUserPrompt',
-    '请基于以下 GitHub 仓库 README 生成完整 HTML。\n仓库名：\${repo.name}\n仓库链接：\${repoUrl}\nREADME 文件：\${readmeResult.path}\n\nREADME 内容：\n\${readmeResult.content}');
+    '请基于以下 GitHub 仓库 README 生成完整 HTML。\n仓库名：\${repo.name}\n仓库链接：\${repoUrl}\nStars：\${repo.stars}\nForks：\${repo.forks}\nREADME 文件：\${readmeResult.path}\n\nREADME 内容：\n\${readmeResult.content}');
   return template
     .replace(/\$\{repo\.name\}/g, repo.name)
     .replace(/\$\{repoUrl\}/g, repoUrl)
+    .replace(/\$\{repo\.stars\}/g, String(repo.stars || 0))
+    .replace(/\$\{repo\.forks\}/g, String(repo.forks || 0))
     .replace(/\$\{readmeResult\.path\}/g, readmeResult.path)
     .replace(/\$\{readmeResult\.content\}/g, readmeResult.content);
 }

@@ -9,6 +9,7 @@ import EmailPushEditor from './components/EmailPushEditor';
 import PromptEditorPanel from './components/PromptEditorPanel';
 import GlobalSmtpSettings from './components/GlobalSmtpSettings';
 import GlobalRssSettings from './components/GlobalRssSettings';
+import PresentationStudio from './components/PresentationStudio';
 import Sidebar from './components/Sidebar';
 import useUiSwitchSound from './hooks/useUiSwitchSound';
 
@@ -925,6 +926,9 @@ function App() {
                 rss={globalRss}
                 onSave={handleSaveGlobalRss}
               />
+            )}
+            {activeSidebarTab === 'presentation' && (
+              <PresentationStudio />
             )}
             {activeSidebarTab === 'prompts' && (
               <PromptEditorPanel

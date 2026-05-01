@@ -34,6 +34,11 @@
   * 每张卡片：`div.card-item > div.title-box + div.card-body`
   * `div.title-box` 内必须有图标和小标题。
   * `div.card-body` 内必须有 `p.js-desc`。
+  * 在所有卡片之后，必须添加一个仓库信息栏：`div.repo-footer`，内含三部分，每部分独占一行（垂直排列）：
+    * Stars 数（如 `Stars: 1.2k`，显示为带数值的 star 图标）
+    * Forks 数（如 `Forks: 300`，显示为带数值的 call_split 图标）
+    * 仓库短链接（`owner/repo` 格式的可点击链接，用 `text-decoration: none` 去掉下划线）
+  * `div.repo-footer` 样式要求：垂直排列（每行 `display: block` 或 `flex-direction: column`）、水平居中、行间距 6px、字号 ${repoFooterFontSize}px、颜色 `#6b7280`、上边距 20px、入场动画跟随最后一张卡片之后。图标使用 Google Material Icons 的 `star` 和 `call_split`。
   * 在 `div.main-container` 之后，固定追加本地图片结构：
     * `div#local-image-modal.local-image-modal`
     * `img#local-image-view.local-image-view`

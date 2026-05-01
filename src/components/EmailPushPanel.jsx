@@ -79,16 +79,6 @@ export default function EmailPushPanel({
     [],
   );
 
-  const updateRss = useCallback(
-    (key, value) => {
-      setEditDraft((prev) => {
-        if (!prev) return prev;
-        return { ...prev, rssConfig: { ...prev.rssConfig, [key]: value } };
-      });
-    },
-    [],
-  );
-
   const handleSelectAccount = useCallback((id) => {
     setActiveId(id);
   }, []);
@@ -344,96 +334,33 @@ export default function EmailPushPanel({
             </div>
           </details>
 
-          {/* RSS Feed Settings (per-account) */}
-          <details className="email-push-section">
-            <summary>RSS 订阅设置（本账户）</summary>
-            <label className="email-push-checkbox-label">
-              <input
-                type="checkbox"
-                checked={editDraft.rssConfig?.enabled || false}
-                onChange={(e) => updateRss('enabled', e.target.checked)}
-              />
-              <span>启用独立 RSS 输出</span>
-            </label>
-            {(editDraft.rssConfig?.enabled) && (
-              <>
-                <label>
-                  <span>目标仓库</span>
-                  <input
-                    type="text"
-                    value={editDraft.rssConfig?.repo || ''}
-                    onChange={(e) => updateRss('repo', e.target.value)}
-                    placeholder="username/repo（如 wengisdove/wengisdove.github.io）"
-                  />
-                </label>
-                <div className="config-inline-grid">
-                  <label>
-                    <span>分支</span>
-                    <input
-                      type="text"
-                      value={editDraft.rssConfig?.branch || 'main'}
-                      onChange={(e) => updateRss('branch', e.target.value)}
-                      placeholder="main"
-                    />
-                  </label>
-                  <label>
-                    <span>文件路径</span>
-                    <input
-                      type="text"
-                      value={editDraft.rssConfig?.filePath || 'feed.xml'}
-                      onChange={(e) => updateRss('filePath', e.target.value)}
-                      placeholder="feed.xml"
-                    />
-                  </label>
-                </div>
-                <label>
-                  <span>Commit 信息</span>
-                  <input
-                    type="text"
-                    value={editDraft.rssConfig?.commitMessage || 'Update RSS feed'}
-                    onChange={(e) => updateRss('commitMessage', e.target.value)}
-                    placeholder="Update RSS feed"
-                  />
-                </label>
-                <label>
-                  <span>订阅标题</span>
-                  <input
-                    type="text"
-                    value={editDraft.rssConfig?.title || ''}
-                    onChange={(e) => updateRss('title', e.target.value)}
-                    placeholder={`GitHub Scout - ${editDraft.name || '未命名'}`}
-                  />
-                </label>
-                <label>
-                  <span>订阅描述</span>
-                  <input
-                    type="text"
-                    value={editDraft.rssConfig?.description || ''}
-                    onChange={(e) => updateRss('description', e.target.value)}
-                    placeholder="GitHub 热门仓库推送"
-                  />
-                </label>
-                <label>
-                  <span>订阅链接（RSS 中显示的网站链接）</span>
-                  <input
-                    type="text"
-                    value={editDraft.rssConfig?.link || ''}
-                    onChange={(e) => updateRss('link', e.target.value)}
-                    placeholder="https://github.com"
-                  />
-                </label>
-                <label>
-                  <span>自定义公开 URL（留空自动生成）</span>
-                  <input
-                    type="text"
-                    value={editDraft.rssConfig?.publicUrl || ''}
-                    onChange={(e) => updateRss('publicUrl', e.target.value)}
-                    placeholder={`自动：https://${(editDraft.rssConfig?.repo || 'owner/repo').split('/')[1] || 'repo'}/${editDraft.rssConfig?.filePath || 'feed.xml'}`}
-                  />
-                </label>
-              </>
-            )}
-          </details>
+          {/* Global RSS Indicator */}
+          <div style={{
+            padding: '8px 12px', marginBottom: 8, borderRadius: 6,
+            background: 'rgba(230, 126, 34, 0.06)', border: '1px solid rgba(230, 126, 34, 0.12)',
+            fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontWeight: 600, color: 'var(--accent-orange)' }}><span className="material-icons" style={{ fontSize: 14, verticalAlign: 'text-bottom' }}>rss_feed</span> RSS 全局设置</span>
+              <button
+                className="push-btn push-btn-sm"
+                onClick={onOpenRssSettings}
+                style={{ fontSize: 10 }}
+              >
+                配置
+              </button>
+            </div>
+            <div style={{ marginTop: 4 }}>
+              {globalRss?.enabled !== false && globalRss?.repo ? (
+                <>
+                  <div>仓库: {globalRss.repo}</div>
+                  <div>文件: {globalRss.filePath || 'feed.xml'}</div>
+                </>
+              ) : (
+                <span style={{ color: 'var(--accent-orange)' }}>! 尚未配置 RSS</span>
+              )}
+            </div>
+          </div>
 
           {/* Actions */}
           <div className="email-push-actions">

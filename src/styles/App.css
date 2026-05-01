@@ -899,59 +899,61 @@ textarea {
 
 /* Presentation */
 .presentation-section {
-  border-top: 1px solid var(--border);
-  background:
-    radial-gradient(circle at top left, rgba(210, 153, 34, 0.08), transparent 28%),
-    linear-gradient(180deg, rgba(28, 35, 51, 0.96), rgba(13, 17, 23, 0.98));
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px 18px;
-  max-height: 44vh;
+  gap: 12px;
+  padding: 8px 8px;
   overflow-y: auto;
-  flex-shrink: 0;
+  max-height: 100%;
+  align-items: center;
+}
+
+.presentation-section > * {
+  width: 100%;
 }
 
 .presentation-empty {
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .presentation-header {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
 }
 
 .presentation-header h3 {
-  font-size: 15px;
+  font-size: 13px;
   color: var(--accent-orange);
-  margin-bottom: 4px;
+  margin: 0;
 }
 
 .presentation-header p {
   color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 11px;
+  line-height: 1.4;
+  margin: 0;
 }
 
 .presentation-actions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
-  justify-content: flex-end;
 }
 
 .presentation-actions button {
-  padding: 7px 12px;
-  border-radius: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.05);
   color: var(--text);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
   transition: all 0.2s;
+  white-space: nowrap;
 }
 
 .presentation-actions button:hover:not(:disabled) {
@@ -976,55 +978,58 @@ textarea {
 }
 
 .presentation-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .presentation-card {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px;
+  gap: 8px;
+  padding: 10px;
   border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 14px;
+  border-radius: 10px;
   background: rgba(8, 12, 18, 0.46);
   min-width: 0;
 }
 
 .presentation-card-large {
-  gap: 12px;
+  gap: 10px;
 }
 
 .presentation-card-title {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .presentation-card label {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
 }
 
 .presentation-card label span {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-secondary);
 }
 
 .presentation-card input,
 .presentation-card textarea {
   width: 100%;
-  padding: 8px 10px;
-  border-radius: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   background: rgba(13, 17, 23, 0.92);
   color: var(--text);
-  font-size: 12px;
+  font-size: 11px;
   font-family: inherit;
+  box-sizing: border-box;
 }
 
 .presentation-card input:focus,
@@ -1034,51 +1039,52 @@ textarea {
 }
 
 .presentation-row {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.presentation-hint {
-  padding: 12px;
-  border-radius: 10px;
-  background: rgba(88, 166, 255, 0.08);
-  border: 1px solid rgba(88, 166, 255, 0.18);
-}
-
-.presentation-hint strong {
-  display: block;
-  margin-bottom: 8px;
-  color: var(--accent);
-  font-size: 12px;
-}
-
-.presentation-hint ul {
-  padding-left: 18px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.presentation-playlist {
-  min-height: 240px;
-  resize: vertical;
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
-  line-height: 1.55;
-}
-
-.presentation-feedback {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
+.presentation-hint {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(88, 166, 255, 0.04);
+  border: 1px solid rgba(88, 166, 255, 0.08);
+}
+
+.presentation-hint strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.presentation-hint ul {
+  padding-left: 16px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.presentation-playlist {
+  min-height: 140px;
+  resize: vertical;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  line-height: 1.5;
+  font-size: 11px;
+}
+
+.presentation-feedback {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .presentation-progress,
 .presentation-success,
 .presentation-error {
-  padding: 10px 12px;
-  border-radius: 10px;
-  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 11px;
 }
 
 .presentation-progress {
@@ -1891,11 +1897,6 @@ textarea {
 }
 
 @media (max-width: 1200px) {
-  .presentation-grid,
-  .presentation-row {
-    grid-template-columns: 1fr;
-  }
-
   .presentation-player-toolbar {
     align-items: flex-start;
     flex-direction: column;

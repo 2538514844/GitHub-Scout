@@ -29,6 +29,7 @@ const DEFAULT_PRESENTATION_CONFIG = {
     holdAfterAudioMs: 300,
     pageLoadTimeoutMs: 8000,
   },
+  repoFooterFontSize: 14,
   playlistText: '',
 };
 
