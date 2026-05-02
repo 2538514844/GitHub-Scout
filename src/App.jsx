@@ -10,6 +10,7 @@ import PromptEditorPanel from './components/PromptEditorPanel';
 import GlobalSmtpSettings from './components/GlobalSmtpSettings';
 import GlobalRssSettings from './components/GlobalRssSettings';
 import PresentationStudio from './components/PresentationStudio';
+import RepoHistoryPanel from './components/RepoHistoryPanel';
 import Sidebar from './components/Sidebar';
 import useUiSwitchSound from './hooks/useUiSwitchSound';
 
@@ -170,6 +171,8 @@ function App() {
         setConfigLogs(prev => [...prev, entry]);
       } else if (entry.message.startsWith('[个人推送]') || entry.message.startsWith('[個人推送]')) {
         setFetchLogs(prev => [...prev, entry]);
+      } else if (entry.message.startsWith('[全局 RSS]')) {
+        setFetchLogs(prev => [...prev, entry]);
       }
     });
   }, []);
@@ -294,6 +297,32 @@ function App() {
     a.click();
     URL.revokeObjectURL(url);
   };
+
+  const [publishingRss, setPublishingRss] = useState(false);
+  const handlePublishRss = useCallback(async () => {
+    const selected = repos.filter((r) => selectedRepoNames.includes(r.name));
+    if (selected.length === 0) return;
+    if (!globalRss?.enabled || !globalRss?.repo) return;
+    setPublishingRss(true);
+    try {
+      const result = await window.electronAPI.pushGlobalRss({ repos: selected });
+      setFetchLogs((prev) => [
+        ...prev,
+        {
+          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+          level: result.ok ? 'success' : 'error',
+          message: `[RSS 发布] ${result.ok ? `已发布: ${result.filePath} → ${result.indexUrl || result.publicUrl}` : (result.message || '发布失败')}`,
+        },
+      ]);
+    } catch (err) {
+      setFetchLogs((prev) => [
+        ...prev,
+        { time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level: 'error', message: `[RSS 发布] 异常: ${err.message}` },
+      ]);
+    } finally {
+      setPublishingRss(false);
+    }
+  }, [repos, selectedRepoNames, globalRss]);
 
   const handleFetchRepos = async () => {
     setLogs([]);
@@ -533,9 +562,9 @@ function App() {
     setEmailPushCrawlingId(accountId);
     try {
       const result = await window.electronAPI.crawlForEmail({ accountId });
+      const account = emailPushAccounts.find((a) => a.id === accountId);
       if (result.ok) {
         setEmailPushRepos({ accountId, repos: result.repos });
-        const account = emailPushAccounts.find((a) => a.id === accountId);
         setEmailPushEditorAccount(account);
         const repoCount = result.repos ? result.repos.length : 0;
         setFetchLogs((prev) => [
@@ -696,6 +725,23 @@ function App() {
                 <path d="M3 13a1 1 0 0 1-1-1v-3a1 1 0 0 1 2 0v3a1 1 0 0 1-1 1zm5-3a1 1 0 0 1-1-1V4a1 1 0 0 1 2 0v5a1 1 0 0 1-1 1zm5 3a1 1 0 0 1-1-1v-3a1 1 0 0 1 2 0v3a1 1 0 0 1-1 1zM1 2a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v1a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2z"/>
               </svg>
               导出
+            </button>
+          )}
+          {repos.length > 0 && globalRss?.enabled && globalRss?.repo && (
+            <button
+              className={`rss-publish-btn ${publishingRss ? 'loading' : ''}`}
+              onClick={handlePublishRss}
+              disabled={publishingRss || loading || analyzing || fetchingReadmes || selectedRepoNames.length === 0}
+              title={selectedRepoNames.length === 0 ? '请先在仓库列表中勾选要发布的仓库' : '发布当前仓库列表到 RSS'}
+            >
+              {publishingRss ? (
+                <span><span className="spinner" /> 发布中...</span>
+              ) : (
+                <>
+                  <span className="material-icons" style={{ fontSize: 14 }}>rss_feed</span>
+                  发布 RSS
+                </>
+              )}
             </button>
           )}
           <button
@@ -930,10 +976,11 @@ function App() {
             {activeSidebarTab === 'presentation' && (
               <PresentationStudio />
             )}
+            {activeSidebarTab === 'repo-history' && (
+              <RepoHistoryPanel />
+            )}
             {activeSidebarTab === 'prompts' && (
-              <PromptEditorPanel
-                onClose={() => setActiveSidebarTab(null)}
-              />
+              <PromptEditorPanel />
             )}
           </Sidebar>
         )}

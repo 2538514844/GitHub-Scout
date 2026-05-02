@@ -1,6 +1,7 @@
 const https = require('https');
 const path = require('path');
 const fs = require('fs');
+const { exec } = require('child_process');
 const { EventEmitter } = require('events');
 const { StringDecoder } = require('string_decoder');
 const { injectLocalImageRuntimeStyle } = require('./local-image-runtime');
@@ -27,10 +28,35 @@ if (!fs.existsSync(README_CAROUSEL_RUNS_DIR)) fs.mkdirSync(README_CAROUSEL_RUNS_
 
 const logEmitter = new EventEmitter();
 
+const LOGS_DIR = path.join(DATA_DIR, 'logs');
+let currentLogDate = '';
+
+function getLogFilePath() {
+  const today = new Date().toISOString().slice(0, 10);
+  return path.join(LOGS_DIR, `app-${today}.log`);
+}
+
+function ensureLogFile() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (currentLogDate === today) return;
+  ensureDir(LOGS_DIR);
+  currentLogDate = today;
+}
+
 function log(message, level = 'info') {
   const timestamp = new Date().toLocaleTimeString('zh-CN', { hour12: false });
   const entry = { time: timestamp, message, level };
   logEmitter.emit('log', entry);
+
+  try {
+    ensureLogFile();
+    const logPath = getLogFilePath();
+    const line = JSON.stringify({ time: new Date().toISOString(), message, level }) + '\n';
+    fs.appendFileSync(logPath, line, 'utf8');
+  } catch (e) {
+    // 写日志文件失败不应该影响应用运行
+  }
+
   return entry;
 }
 
@@ -227,6 +253,24 @@ function getPromptRegistry() {
       defaultText: '',
       filePath: null,
     },
+    {
+      key: 'rssItemIntroPrompt',
+      name: 'RSS 条目介绍提示词（单仓库）',
+      category: 'RSS & Email',
+      isTemplate: false,
+      templateVars: [],
+      defaultText: '你是一个GitHub项目推荐编辑。请为以下仓库各写一句20~50字的中文介绍，适合RSS订阅者快速了解项目价值。\n\n要求：\n1. 每行一个仓库，格式：仓库名|介绍\n2. 介绍控制在20~50个汉字，简洁有力\n3. 聚焦项目解决了什么问题、有什么特色\n4. 使用自然流畅的中文，不要堆砌关键词\n5. 不要包含标签、star数等元数据，纯文字介绍\n6. 不要提及"该仓库""这个项目"等冗余开头，直接描述',
+      filePath: null,
+    },
+    {
+      key: 'emailItemIntroPrompt',
+      name: '邮件条目介绍提示词',
+      category: 'RSS & Email',
+      isTemplate: false,
+      templateVars: [],
+      defaultText: '你是一个GitHub项目推荐编辑。请为以下仓库各写一句20~50字的中文介绍，适合邮件订阅者阅读。\n\n要求：\n1. 每行一个仓库，格式：仓库名|介绍\n2. 介绍控制在20~50个汉字，有吸引力\n3. 突出项目亮点和实用价值，让读者有点击欲望\n4. 使用自然流畅的中文，不要堆砌关键词\n5. 不要包含标签、star数等元数据，纯文字介绍\n6. 不要提及"该仓库""这个项目"等冗余开头，直接描述',
+      filePath: null,
+    },
   ];
 }
 
@@ -280,8 +324,34 @@ function readResponseText(res) {
   });
 }
 
+function shouldRetryNetworkError(err) {
+  if (!err) return false;
+  const msg = (err.message || '').toLowerCase();
+  const code = (err.code || '').toUpperCase();
+  const retryCodes = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EPIPE', 'EPROTO', 'ECONNABORTED', 'ERR_SSL_PROTOCOL_ERROR', 'ERR_SSL_PACKET_LENGTH']);
+  const retryMessages = ['socket disconnected', 'tls', 'ssl', 'network', 'connect'];
+  return retryCodes.has(code) || retryMessages.some((k) => msg.includes(k));
+}
+
+async function withNetworkRetry(fn, maxRetries = 2) {
+  let lastErr;
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (i < maxRetries && shouldRetryNetworkError(err)) {
+        await new Promise((r) => setTimeout(r, 800 * (i + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
 function httpsRequest(url, options, body, method = 'POST') {
-  return new Promise((resolve, reject) => {
+  return withNetworkRetry(() => new Promise((resolve, reject) => {
     const urlObj = new URL(url);
     const req = https.request({
       hostname: urlObj.hostname,
@@ -289,6 +359,7 @@ function httpsRequest(url, options, body, method = 'POST') {
       path: urlObj.pathname + urlObj.search,
       method,
       headers: options.headers,
+      rejectUnauthorized: false,
     }, async (res) => {
       try {
         const data = await readResponseText(res);
@@ -303,12 +374,19 @@ function httpsRequest(url, options, body, method = 'POST') {
     }
     req.write(body);
     req.end();
-  });
+  }));
 }
 
 function httpsGet(url, headers = {}) {
-  return new Promise((resolve, reject) => {
-    https.get(url, { headers }, async (res) => {
+  return withNetworkRetry(() => new Promise((resolve, reject) => {
+    const urlObj = new URL(url);
+    const req = https.get({
+      hostname: urlObj.hostname,
+      port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
+      path: urlObj.pathname + urlObj.search,
+      headers,
+      rejectUnauthorized: false,
+    }, async (res) => {
       try {
         const data = await readResponseText(res);
         resolve({ statusCode: res.statusCode, data });
@@ -316,7 +394,7 @@ function httpsGet(url, headers = {}) {
         reject(e);
       }
     }).on('error', reject);
-  });
+  }));
 }
 
 function buildGitHubHeaders(token, extraHeaders = {}) {
@@ -1686,7 +1764,7 @@ function copyFontToOutput(outputDir) {
   return HTML_FONT_FILE_NAME;
 }
 
-function buildCarouselIndexHtml(items, pageTurnSoundEntryPath = '') {
+function buildCarouselIndexHtml(items, pageTurnSoundEntryPath = '', repoFooterFontSize = 14) {
   const payload = JSON.stringify(items.map((item) => ({
     title: item.title,
     repoName: item.repoName,
@@ -1774,6 +1852,7 @@ function buildCarouselIndexHtml(items, pageTurnSoundEntryPath = '') {
   <script>
     const items = ${payload};
     const pageTurnSoundSrc = ${pageTurnSoundPayload};
+    const FOOTER_FONT_SIZE = ${repoFooterFontSize};
     const frames = [
       document.getElementById('frame-a'),
       document.getElementById('frame-b'),
@@ -1792,6 +1871,19 @@ function buildCarouselIndexHtml(items, pageTurnSoundEntryPath = '') {
     if (pageTurnSfx) {
       pageTurnSfx.preload = 'auto';
       pageTurnSfx.volume = 0.2;
+    }
+
+    function injectFooterFontSize(frame) {
+      try {
+        var doc = frame.contentDocument;
+        if (doc && doc.head) {
+          var style = doc.createElement('style');
+          style.textContent = '.repo-footer, .repo-footer * { font-size: ' + FOOTER_FONT_SIZE + 'px !important; }';
+          doc.head.appendChild(style);
+        }
+      } catch (e) {
+        // cross-origin iframe, ignore
+      }
     }
 
     function clearFallbackTimer() {
@@ -1854,6 +1946,7 @@ function buildCarouselIndexHtml(items, pageTurnSoundEntryPath = '') {
         candidate.classList.toggle('active', candidate === frame);
       });
       activeFrameIndex = frames.indexOf(frame);
+      injectFooterFontSize(frame);
     }
 
     function advanceToNext() {
@@ -2799,7 +2892,9 @@ async function handleFetchSelectedReadmes(payload = {}) {
     };
   }
 
-  const ttsConfig = loadPresentationConfig().tts;
+  const presentationConfig = loadPresentationConfig();
+  const ttsConfig = presentationConfig.tts;
+  const footerFontSize = presentationConfig.repoFooterFontSize || 14;
   if (!ttsConfig?.apiKey) {
     return {
       ok: false,
@@ -2939,7 +3034,7 @@ async function handleFetchSelectedReadmes(payload = {}) {
   fs.writeFileSync(pipelineManifestPath, JSON.stringify(pipelineManifest, null, 2), 'utf8');
   fs.writeFileSync(
     pipelineEntryHtmlPath,
-    buildCarouselIndexHtml(pipelineCarouselItems, pipelinePageTurnSoundEntryPath),
+    buildCarouselIndexHtml(pipelineCarouselItems, pipelinePageTurnSoundEntryPath, footerFontSize),
     'utf8',
   );
   log(`[README] 轮播入口已生成: ${pipelineEntryHtmlPath}`, 'success');
@@ -3136,7 +3231,7 @@ async function handleFetchSelectedReadmes(payload = {}) {
   }
 
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
-  fs.writeFileSync(entryHtmlPath, buildCarouselIndexHtml(successItems, pageTurnSoundEntryPath), 'utf8');
+  fs.writeFileSync(entryHtmlPath, buildCarouselIndexHtml(successItems, pageTurnSoundEntryPath, footerFontSize), 'utf8');
   log(`[README] 轮播入口已生成: ${entryHtmlPath}`, 'success');
 
   return {
@@ -3274,7 +3369,16 @@ function loadRepoAnalysis() {
 }
 
 function saveRepoAnalysis(data) {
-  fs.writeFileSync(REPO_ANALYSIS_FILE, JSON.stringify(sanitizeRepoAnalysisData(data), null, 2));
+  const serialized = JSON.stringify(sanitizeRepoAnalysisData(data), null, 2);
+  // 原子写入：先写临时文件，备份旧文件，再重命名
+  const tmp = REPO_ANALYSIS_FILE + '.tmp';
+  fs.writeFileSync(tmp, serialized, 'utf8');
+  try {
+    if (fs.existsSync(REPO_ANALYSIS_FILE)) {
+      fs.copyFileSync(REPO_ANALYSIS_FILE, REPO_ANALYSIS_FILE + '.bak');
+    }
+  } catch (_) { /* backup non-critical */ }
+  fs.renameSync(tmp, REPO_ANALYSIS_FILE);
 }
 
 // Normalize tag: lowercase, trim, unify common variants
@@ -4067,7 +4171,7 @@ function buildEmailBody(accountName, repos) {
       const tags = (r.aiTags && r.aiTags.length > 0)
         ? r.aiTags.map((t) => `<span style="display:inline-block;background:#1c2333;color:#58a6ff;padding:1px 6px;border-radius:3px;font-size:11px;margin:1px 2px">${t}</span>`).join('')
         : '';
-      const desc = r.aiDescription || r.description || '';
+      const desc = r.emailIntro || r.aiDescription || r.description || '';
       const shortName = r.name || '';
       return [
         '<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:12px">',
@@ -4212,7 +4316,16 @@ async function handleEmailPushSend(payload) {
   }
 
   log(`[个人推送] 发送配置: 账户=${account.name}, 仓库数=${payload.repos.length}, 收件人数=${account.recipients.length}`, 'info');
-  const results = await sendEmailViaSmtp(smtp, account, payload.repos);
+
+  // Generate AI intros for email (20-50 chars per repo)
+  const emailIntroMap = await generateRepoIntros(payload.repos, 'emailItemIntroPrompt');
+  const reposWithEmailIntros = payload.repos.map((r) => ({ ...r, emailIntro: emailIntroMap[r.name] || '' }));
+  const emailIntroCount = Object.values(emailIntroMap).filter(Boolean).length;
+  if (emailIntroCount > 0) {
+    log(`[个人推送] AI 生成 ${emailIntroCount}/${reposWithEmailIntros.length} 条邮件介绍`, 'info');
+  }
+
+  const results = await sendEmailViaSmtp(smtp, account, reposWithEmailIntros);
   const okCount = results.filter((r) => r.ok).length;
   const failCount = results.filter((r) => !r.ok).length;
   log(`[个人推送] 发送完成: 成功 ${okCount}, 失败 ${failCount}`, okCount > 0 ? 'success' : 'error');
@@ -4313,56 +4426,260 @@ function toRfc822Date(d) {
   return `${days[date.getUTCDay()]}, ${pad(date.getUTCDate())} ${months[date.getUTCMonth()]} ${date.getUTCFullYear()} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} GMT`;
 }
 
-function buildRssXml(account, repos) {
-  const rssConfig = account.rssConfig || {};
-  const title = escapeXml(rssConfig.title || `GitHub Scout - ${account.name || 'Untitled'}`);
-  const description = escapeXml(rssConfig.description || 'GitHub 仓库推送');
-  const link = escapeXml(rssConfig.link || 'https://github.com');
-  const buildDate = toRfc822Date();
+async function generateRepoIntros(repos, promptKey) {
+  if (!repos || repos.length === 0) return {};
+  const settings = loadSettings();
+  const vendor = settings.vendor || 'openai';
+  const vendors = settings.vendors || {};
+  const vendorConfig = vendors[vendor] || Object.values(vendors)[0];
+  if (!vendorConfig || !vendorConfig.baseUrl || !vendorConfig.apiKey) return {};
 
-  const items = repos.map((r) => {
-    const tags = (r.aiTags && r.aiTags.length > 0) ? r.aiTags.join(', ') : '';
-    const desc = r.aiDescription || r.description || '';
-    const repoLink = r.url || `https://github.com/${r.name}`;
-    const pubDate = toRfc822Date(r.created || r.updated);
+  const registry = getPromptRegistry();
+  const entry = registry.find((p) => p.key === promptKey);
+  const defaultPrompt = entry ? entry.defaultText : '';
+  const promptText = resolvePrompt(promptKey, defaultPrompt).trim();
+  if (!promptText) return {};
 
-    const shortName = r.name || '';
-    const descHtml = [
-      tags ? `<p><strong>标签:</strong> ${escapeXml(tags)}</p>` : '',
-      desc ? `<p>${escapeXml(desc)}</p>` : '',
-      `<p>Stars: ${r.stars || 0} | Forks: ${r.forks || 0} | ${escapeXml(r.language || 'N/A')} | <a href="${escapeXml(repoLink)}">${escapeXml(shortName)}</a></p>`,
-    ].filter(Boolean).join('\n          ');
-
-    return [
-      '    <item>',
-      `      <title>${escapeXml(r.name)}</title>`,
-      `      <link>${escapeXml(repoLink)}</link>`,
-      `      <description>${descHtml}</description>`,
-      `      <pubDate>${pubDate}</pubDate>`,
-      `      <guid isPermaLink="true">${escapeXml(repoLink)}</guid>`,
-      '    </item>',
-    ].join('\n');
+  const repoList = repos.map((r) => {
+    const name = r.name || '';
+    const lang = r.language || '?';
+    const desc = (r.aiDescription || r.description || '').slice(0, 80);
+    const stars = r.stars || 0;
+    const tags = (r.aiTags || []).join(', ');
+    return `${name} | 语言:${lang} | Stars:${stars} | 标签:${tags || '无'} | 简介:${desc}`;
   }).join('\n');
 
-  return [
+  const messages = [
+    { role: 'system', content: promptText },
+    { role: 'user', content: repoList },
+  ];
+
+  try {
+    const result = await callAiChat(
+      { baseUrl: vendorConfig.baseUrl, apiKey: vendorConfig.apiKey, model: vendorConfig.model || '' },
+      messages,
+      { maxTokens: 2048, temperature: 0.7 },
+    );
+    if (!result.ok || !result.content) return {};
+
+    const introMap = {};
+    const lines = result.content.split('\n').filter(Boolean);
+    for (const line of lines) {
+      const parts = line.split('|');
+      if (parts.length >= 2) {
+        const name = parts[0].trim();
+        const intro = parts.slice(1).join('|').trim();
+        if (name && intro) introMap[name] = intro;
+      }
+    }
+    return introMap;
+  } catch {
+    return {};
+  }
+}
+
+// --- RSS XML Builder (juya-compatible format) ---
+
+const RSS_NS = {
+  atom: 'http://www.w3.org/2005/Atom',
+  content: 'http://purl.org/rss/1.0/modules/content/',
+};
+
+function validXmlChar(c) {
+  const cp = c.codePointAt(0);
+  return cp === 0x9 || cp === 0xA || cp === 0xD
+    || (cp >= 0x20 && cp <= 0xD7FF)
+    || (cp >= 0xE000 && cp <= 0xFFFD)
+    || (cp >= 0x10000 && cp <= 0x10FFFF);
+}
+
+function cleanXml(str) {
+  if (!str) return '';
+  return String(str).split('').filter(validXmlChar).join('');
+}
+
+function esc(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Build RSS 2.0 channel + items (juya-compatible: CDATA on text fields, proper namespaces)
+function renderRss(channelMeta, itemsXml) {
+  const { title, link, description, feedUrl, buildDate, language, imageUrl } = channelMeta;
+  const lang = language || 'zh-CN';
+  const lines = [
     '<?xml version="1.0" encoding="UTF-8"?>',
-    '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">',
+    '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">',
     '  <channel>',
-    `    <title>${title}</title>`,
-    `    <description>${description}</description>`,
-    `    <link>${escapeXml(link)}</link>`,
+    `    <title><![CDATA[${title}]]></title>`,
+    `    <link>${esc(link)}</link>`,
+    `    <description><![CDATA[${description}]]></description>`,
+    `    <language>${esc(lang)}</language>`,
     `    <lastBuildDate>${buildDate}</lastBuildDate>`,
+    `    <docs>http://www.rssboard.org/rss-specification</docs>`,
     `    <generator>GitHub Scout</generator>`,
-    `    <atom:link href="${escapeXml(link)}" rel="self" type="application/rss+xml"/>`,
-    items,
-    '  </channel>',
-    '</rss>',
+  ];
+  if (feedUrl) {
+    lines.push(`    <atom:link href="${esc(feedUrl)}" rel="self" type="application/rss+xml"/>`);
+  }
+  if (imageUrl) {
+    lines.push(
+      '    <image>',
+      `      <url>${esc(imageUrl)}</url>`,
+      `      <title><![CDATA[${title}]]></title>`,
+      `      <link>${esc(link)}</link>`,
+      '    </image>',
+    );
+  }
+  lines.push(itemsXml);
+  lines.push('  </channel>');
+  lines.push('</rss>');
+  return lines.join('\n');
+}
+
+// Build one RSS item from repo data
+function renderRepoItem(repo) {
+  const name = esc(cleanXml(repo.name || ''));
+  const url = esc(repo.url || `https://github.com/${repo.name}`);
+  const desc = repo.rssIntro || repo.aiDescription || repo.description || '';
+  const lang = repo.language || 'N/A';
+  return [
+    '    <item>',
+    `      <title>${name}</title>`,
+    `      <link>${url}</link>`,
+    `      <description>${esc(cleanXml(`${desc} | Stars: ${repo.stars || 0} | ${lang}`))}</description>`,
+    `      <pubDate>${toRfc822Date(repo.created || repo.updated)}</pubDate>`,
+    `      <guid isPermaLink="true">${url}</guid>`,
+    '    </item>',
   ].join('\n');
 }
 
+// Build one RSS item per repo (juya-style: CDATA text fields, author, categories)
+function renderRepoRssItem(repo) {
+  const name = cleanXml(repo.name || '');
+  const url = esc(repo.url || `https://github.com/${repo.name}`);
+  const desc = repo.rssIntro || repo.aiDescription || repo.description || '';
+  const tags = repo.aiTags || [];
+  const language = repo.language || '';
+  const stars = repo.stars || 0;
+  const forks = repo.forks || 0;
+  const dateStr = repo.created || repo.updated || '';
+  const pubDate = toRfc822Date(repo.created || repo.updated);
+
+  // Plain text summary (≤360 chars, matching juya's make_rss_summary)
+  let summary = `${repo.name || ''} — ${desc}`;
+  if (tags.length > 0) summary += ` | 标签: ${tags.join(', ')}`;
+  summary += ` | ⭐${stars}`;
+  if (language) summary += ` | ${language}`;
+  if (summary.length > 360) summary = summary.slice(0, 357) + '…';
+  summary = cleanXml(summary);
+
+  // Full HTML for content:encoded (juya-style: markdown→HTML→CDATA)
+  const dateDisplay = dateStr ? dateStr.slice(0, 10) : '';
+  const headerLine = [`⭐ ${stars}`, forks ? `🍴 ${forks}` : '', language, dateDisplay]
+    .filter(Boolean).join(' · ');
+
+  const tagHtml = tags.length > 0
+    ? tags.map((t) => `<code>${esc(t)}</code>`).join(' ')
+    : '';
+
+  const descBlock = desc
+    ? `<blockquote>${esc(cleanXml(desc))}</blockquote>`
+    : '';
+
+  const html = cleanXml([
+    `<h2><a href="${url}">${esc(name)}</a></h2>`,
+    `<p>${esc(headerLine)}</p>`,
+    descBlock,
+    tagHtml ? `<p>标签: ${tagHtml}</p>` : '',
+    `<p><a href="${url}">&#128279; 查看仓库</a></p>`,
+  ].filter(Boolean).join('\n'));
+
+  const cats = [
+    ...tags.map((t) => `      <category>${esc(cleanXml(t))}</category>`),
+    ...(language ? [`      <category>${esc(cleanXml(language))}</category>`] : []),
+  ];
+
+  return [
+    '    <item>',
+    `      <title><![CDATA[${name}]]></title>`,
+    `      <link>${url}</link>`,
+    `      <author>GitHub Scout</author>`,
+    `      <description><![CDATA[${summary}]]></description>`,
+    `      <content:encoded><![CDATA[${html}]]></content:encoded>`,
+    `      <pubDate>${pubDate}</pubDate>`,
+    `      <guid isPermaLink="true">${url}</guid>`,
+    ...cats,
+    '    </item>',
+  ].join('\n');
+}
+
+function parseExistingRssItems(xmlContent) {
+  const items = [];
+  const itemRegex = /<item>([\s\S]*?)<\/item>/gi;
+  const guidRegex = /<guid[^>]*>([\s\S]*?)<\/guid>/i;
+  let match;
+  while ((match = itemRegex.exec(xmlContent)) !== null) {
+    const itemXml = match[0];
+    const guidMatch = itemXml.match(guidRegex);
+    items.push({ xml: itemXml, guid: guidMatch ? guidMatch[1].trim() : '' });
+  }
+  return items;
+}
+
+// Per-account RSS (one item per repo)
+function buildRssXml(account, repos, existingItems, maxItems) {
+  const cfg = account.rssConfig || {};
+  const meta = {
+    title: cfg.title || `GitHub Scout - ${account.name || 'Untitled'}`,
+    link: cfg.link || 'https://github.com',
+    description: cfg.description || 'GitHub 仓库推送',
+    feedUrl: computeRssPublicUrlFromConfig(cfg),
+    buildDate: toRfc822Date(),
+  };
+
+  const newXmls = repos.map(renderRepoItem);
+  const existGuids = new Set((existingItems || []).map((e) => e.guid).filter(Boolean));
+  const trulyNew = newXmls.filter((_, i) => {
+    const guid = repos[i].url || `https://github.com/${repos[i].name}`;
+    return !existGuids.has(guid);
+  });
+  const all = [...trulyNew, ...(existingItems || []).map((e) => e.xml)].slice(0, maxItems || 200);
+  return renderRss(meta, all.join('\n'));
+}
+
+// Global RSS (juya-style: per-repo items with CDATA, author, categories)
+function buildGlobalRssXml(rssConfig, repos, existingItems, maxItems) {
+  const feedUrl = computeRssPublicUrlFromConfig(rssConfig);
+  const meta = {
+    title: rssConfig.title || 'GitHub Scout 每日精选',
+    link: rssConfig.link || 'https://github.com',
+    description: rssConfig.description || 'AI 精选 GitHub 热门仓库，每日更新',
+    feedUrl,
+    buildDate: toRfc822Date(),
+    language: 'zh-CN',
+  };
+
+  // Build per-repo items
+  const newItemXmls = repos.map(renderRepoRssItem);
+
+  // Deduplicate against existing items by guid (repo URL)
+  const existGuids = new Set((existingItems || []).map((e) => e.guid).filter(Boolean));
+  const trulyNew = newItemXmls.filter((_, i) => {
+    const guid = repos[i].url || `https://github.com/${repos[i].name}`;
+    return !existGuids.has(guid);
+  });
+
+  const all = [...trulyNew, ...(existingItems || []).map((e) => e.xml)].slice(0, maxItems || 200);
+  return renderRss(meta, all.join('\n'));
+}
+
 function computeRssPublicUrl(account) {
-  const rssConfig = account.rssConfig || {};
-  return computeRssPublicUrlFromConfig(rssConfig);
+  return computeRssPublicUrlFromConfig(account.rssConfig || {});
 }
 
 function computeRssPublicUrlFromConfig(rssConfig) {
@@ -4374,61 +4691,13 @@ function computeRssPublicUrlFromConfig(rssConfig) {
   const branch = (rssConfig.branch || 'main').trim();
   const filePath = (rssConfig.filePath || 'feed.xml').trim();
   if (!repo) return '';
-
   const parts = repo.split('/');
   if (parts.length !== 2) return '';
-
   const [owner, repoName] = parts;
   if (repoName.endsWith('.github.io')) {
     return `https://${repoName}/${filePath}`;
   }
   return `https://raw.githubusercontent.com/${owner}/${repoName}/${branch}/${filePath}`;
-}
-
-function buildRssXmlFromConfig(rssConfig, feedName, repos) {
-  const title = escapeXml(rssConfig.title || `GitHub Scout - ${feedName || '推送'}`);
-  const description = escapeXml(rssConfig.description || 'GitHub 仓库推送');
-  const link = escapeXml(rssConfig.link || 'https://github.com');
-  const buildDate = toRfc822Date();
-
-  const items = repos.map((r) => {
-    const tags = (r.aiTags && r.aiTags.length > 0) ? r.aiTags.join(', ') : '';
-    const desc = r.aiDescription || r.description || '';
-    const repoLink = r.url || `https://github.com/${r.name}`;
-    const pubDate = toRfc822Date(r.created || r.updated);
-    const shortName = r.name || '';
-
-    const descHtml = [
-      tags ? `<p><strong>标签:</strong> ${escapeXml(tags)}</p>` : '',
-      desc ? `<p>${escapeXml(desc)}</p>` : '',
-      `<p>Stars: ${r.stars || 0} | Forks: ${r.forks || 0} | ${escapeXml(r.language || 'N/A')} | <a href="${escapeXml(repoLink)}">${escapeXml(shortName)}</a></p>`,
-    ].filter(Boolean).join('\n          ');
-
-    return [
-      '    <item>',
-      `      <title>${escapeXml(r.name)}</title>`,
-      `      <link>${escapeXml(repoLink)}</link>`,
-      `      <description>${descHtml}</description>`,
-      `      <pubDate>${pubDate}</pubDate>`,
-      `      <guid isPermaLink="true">${escapeXml(repoLink)}</guid>`,
-      '    </item>',
-    ].join('\n');
-  }).join('\n');
-
-  return [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">',
-    '  <channel>',
-    `    <title>${title}</title>`,
-    `    <description>${description}</description>`,
-    `    <link>${escapeXml(link)}</link>`,
-    `    <lastBuildDate>${buildDate}</lastBuildDate>`,
-    `    <generator>GitHub Scout</generator>`,
-    `    <atom:link href="${escapeXml(link)}" rel="self" type="application/rss+xml"/>`,
-    items,
-    '  </channel>',
-    '</rss>',
-  ].join('\n');
 }
 
 async function handlePushRssUpload(payload) {
@@ -4447,22 +4716,23 @@ async function handlePushRssUpload(payload) {
 
   // Load GitHub token
   const auth = loadAuth();
-  const token = auth?.token;
+  const token = auth?.accessToken;
   if (!token) {
     return { ok: false, message: '请先在 GitHub 登录中完成认证（需要 repo 权限的 PAT）' };
   }
 
-  const rssXml = buildRssXml(account, payload.repos);
   const branch = (rssConfig.branch || 'main').trim();
   const filePath = (rssConfig.filePath || 'feed.xml').trim().replace(/^\//, '');
   const commitMessage = (rssConfig.commitMessage || 'Update RSS feed').trim();
+  const maxItems = rssConfig.maxItems || 200;
   const [owner, repoName] = repo.split('/').map((s) => s.trim());
   const apiPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/contents/${encodeURIComponent(filePath)}`;
 
   log(`[个人推送 RSS] 开始上传到 ${repo}/${filePath}...`, 'info');
 
-  // Step 1: Fetch existing file SHA (if any)
+  // Step 1: Fetch existing file SHA and content (if any), merge with new repos
   let sha = null;
+  let existingItems = [];
   try {
     const getRes = await httpsGet(
       `https://api.github.com${apiPath}?ref=${encodeURIComponent(branch)}`,
@@ -4471,7 +4741,15 @@ async function handlePushRssUpload(payload) {
     if (getRes.statusCode === 200) {
       const parsed = parseJsonSafely(getRes.data);
       if (parsed?.sha) sha = parsed.sha;
-      log(`[个人推送 RSS] 检测到已有文件，将更新 (SHA: ${sha?.slice(0, 8)}...)`, 'info');
+      if (parsed?.content) {
+        try {
+          const oldXml = Buffer.from(parsed.content, 'base64').toString('utf-8');
+          existingItems = parseExistingRssItems(oldXml);
+          log(`[个人推送 RSS] 检测到已有文件 (${existingItems.length} 条)，将合并新条目 (SHA: ${sha?.slice(0, 8)}...)`, 'info');
+        } catch {
+          log('[个人推送 RSS] 解码旧文件失败，将覆盖原文件', 'warn');
+        }
+      }
     } else if (getRes.statusCode === 404) {
       log('[个人推送 RSS] 目标文件不存在，将创建新文件', 'info');
     } else {
@@ -4479,6 +4757,13 @@ async function handlePushRssUpload(payload) {
     }
   } catch (e) {
     log(`[个人推送 RSS] 获取文件信息失败: ${e.message}，继续尝试上传`, 'warn');
+  }
+
+  const introMap = await generateRepoIntros(payload.repos, 'rssItemIntroPrompt');
+  const reposWithIntros = payload.repos.map((r) => ({ ...r, rssIntro: introMap[r.name] || '' }));
+  const rssXml = buildRssXml(account, reposWithIntros, existingItems, maxItems);
+  if (existingItems.length > 0) {
+    log(`[个人推送 RSS] 合并后共 ${existingItems.length + Math.min(payload.repos.length, maxItems)} 条`, 'info');
   }
 
   // Step 2: Create or update file via GitHub Contents API
@@ -4549,21 +4834,34 @@ async function handlePushGlobalRssUpload(payload) {
   }
 
   const auth = loadAuth();
-  const token = auth?.token;
+  const token = auth?.accessToken;
   if (!token) {
     return { ok: false, message: '请先在 GitHub 登录中完成认证（需要 repo 权限的 PAT）' };
   }
 
-  const rssXml = buildRssXmlFromConfig(rssConfig, rssConfig.title || 'Global', payload.repos);
   const branch = (rssConfig.branch || 'main').trim();
-  const filePath = (rssConfig.filePath || 'feed.xml').trim().replace(/^\//, '');
   const commitMessage = (rssConfig.commitMessage || 'Update RSS feed').trim();
+  const fileMode = rssConfig.fileMode || 'dated';
   const [owner, repoName] = repo.split('/').map((s) => s.trim());
+
+  // Dated mode: replace {date} with today's date
+  let filePath = (rssConfig.filePath || 'feed.xml').trim().replace(/^\//, '');
+  const todayStr = new Date().toISOString().slice(0, 10);
+  if (fileMode === 'dated') {
+    filePath = filePath.replace(/\{date\}/g, todayStr);
+    if (!filePath.includes(todayStr)) {
+      // Auto-insert date before .xml if no {date} placeholder
+      filePath = filePath.replace(/\.xml$/, `-${todayStr}.xml`);
+    }
+  }
   const apiPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/contents/${encodeURIComponent(filePath)}`;
 
-  log(`[全局 RSS] 开始上传到 ${repo}/${filePath} (${payload.repos.length} 个仓库)...`, 'info');
+  log(`[全局 RSS] 模式: ${fileMode === 'dated' ? '按日期分文件' : '合并'} → ${repo}/${filePath}`, 'info');
 
   let sha = null;
+  let existingItems = [];
+
+  // Always check if file exists to get sha (needed for update, or error if re-publishing)
   try {
     const getRes = await httpsGet(
       `https://api.github.com${apiPath}?ref=${encodeURIComponent(branch)}`,
@@ -4572,19 +4870,111 @@ async function handlePushGlobalRssUpload(payload) {
     if (getRes.statusCode === 200) {
       const parsed = parseJsonSafely(getRes.data);
       if (parsed?.sha) sha = parsed.sha;
-      log(`[全局 RSS] 检测到已有文件，将更新 (SHA: ${sha?.slice(0, 8)}...)`, 'info');
+      if (parsed?.content) {
+        try {
+          const oldXml = Buffer.from(parsed.content, 'base64').toString('utf-8');
+          existingItems = parseExistingRssItems(oldXml);
+          log(`[全局 RSS] 检测到已有文件 (${existingItems.length} 条)`, 'info');
+        } catch {
+          log('[全局 RSS] 解码旧文件失败，将覆盖原文件', 'warn');
+        }
+      }
+      log(`[全局 RSS] 文件已存在，将${fileMode === 'merge' ? '合并' : '覆盖'}更新 (SHA: ${sha?.slice(0, 8)}...)`, 'info');
     } else if (getRes.statusCode === 404) {
-      log('[全局 RSS] 目标文件不存在，将创建新文件', 'info');
-    } else {
-      log(`[全局 RSS] 获取文件信息返回 ${getRes.statusCode}，继续尝试上传`, 'warn');
+      log(`[全局 RSS] 目标文件不存在，将创建新文件: ${filePath}`, 'info');
     }
   } catch (e) {
-    log(`[全局 RSS] 获取文件信息失败: ${e.message}，继续尝试上传`, 'warn');
+    log(`[全局 RSS] 获取文件信息失败: ${e.message}`, 'warn');
+  }
+
+  if (fileMode === 'merge' && existingItems.length > 0) {
+    log(`[全局 RSS] 合并模式: 新 ${payload.repos.length} 条 + 已有 ${existingItems.length} 条`, 'info');
+  }
+
+  // Generate AI intros per repo
+  const introMap = await generateRepoIntros(payload.repos, 'rssItemIntroPrompt');
+  const reposWithIntros = payload.repos.map((r) => ({
+    ...r,
+    rssIntro: introMap[r.name] || '',
+  }));
+  const introCount = Object.values(introMap).filter(Boolean).length;
+  if (introCount > 0) {
+    log(`[全局 RSS] AI 生成 ${introCount}/${reposWithIntros.length} 条介绍`, 'info');
+  } else {
+    log('[全局 RSS] 未生成 AI 介绍（请确认 AI 配置已设置且可用）', 'warn');
+  }
+
+  // Build per-repo RSS XML (juya-style: one item per repo)
+  const resolvedRssConfig = { ...rssConfig, filePath };
+  const mergedExisting = fileMode === 'merge' ? existingItems : [];
+  const finalXml = buildGlobalRssXml(resolvedRssConfig, reposWithIntros, mergedExisting, rssConfig.maxItems || 200);
+  log(`[全局 RSS] ${reposWithIntros.length} 个仓库条目, XML ${finalXml.length} 字节`, 'info');
+  log(`[全局 RSS] 前 600 字符:\n${finalXml.slice(0, 600)}`, 'info');
+
+  // 同步到 juya 项目本地目录
+  try {
+    const juyaDir = 'E:/Downloads/juya-ai-daily-master';
+    fs.writeFileSync(path.join(juyaDir, 'rss.xml'), finalXml, 'utf-8');
+
+    // 每个仓库生成一个 .md 到 BACKUP/（Zola 渲染用）
+    const backupDir = path.join(juyaDir, 'BACKUP');
+    if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir);
+    let mdCount = 0;
+    for (const repo of reposWithIntros) {
+      const name = repo.name || '';
+      const url = repo.url || `https://github.com/${name}`;
+      const desc = repo.rssIntro || repo.aiDescription || repo.description || '';
+      const stars = repo.stars || 0;
+      const forks = repo.forks || 0;
+      const lang = repo.language || '';
+      const tags = repo.aiTags || [];
+      const dateStr = (repo.created || repo.updated || '').slice(0, 10);
+
+      const stats = [`⭐ ${stars}`];
+      if (forks) stats.push(`🍴 ${forks}`);
+      if (lang && lang !== 'N/A') stats.push(lang);
+      if (dateStr) stats.push(dateStr);
+
+      const tagSpans = tags.filter(Boolean).map(t => '`' + t + '`').join(' ');
+
+      const md = [
+        `# [${name}](${url})`,
+        '',
+        stats.join(' | '),
+        '',
+        desc ? `> ${desc}` : '',
+        '',
+        tags.length ? '## 标签' : '',
+        '',
+        tagSpans || '',
+        '',
+        '---',
+        '',
+        `[查看仓库](${url})`,
+        '',
+      ].join('\n');
+
+      const filename = name.replace(/[<>:"/\\\\|?*]/g, '_').replace(/\//g, '_') + '.md';
+      fs.writeFileSync(path.join(backupDir, filename), md, 'utf-8');
+      mdCount++;
+    }
+    log(`[全局 RSS] 已同步到 juya: rss.xml + ${mdCount} 个 .md -> BACKUP/`, 'success');
+
+    // 自动 git push 触发网站构建
+    exec(`cd "${juyaDir}" && git add -A && git commit -m "更新仓库推荐 [GitHub Scout]" && git push`, (err, stdout, stderr) => {
+      if (err) {
+        log(`[全局 RSS] git push 失败: ${stderr || err.message}`, 'warn');
+        return;
+      }
+      log(`[全局 RSS] 已推送，网站即将更新: https://2538514844.github.io/juya-ai-daily/`, 'success');
+    });
+  } catch (e) {
+    log(`[全局 RSS] 同步 juya 失败: ${e.message}`, 'warn');
   }
 
   const body = {
     message: commitMessage,
-    content: Buffer.from(rssXml, 'utf-8').toString('base64'),
+    content: Buffer.from(finalXml, 'utf-8').toString('base64'),
     branch,
   };
   if (sha) body.sha = sha;
@@ -4598,15 +4988,26 @@ async function handlePushGlobalRssUpload(payload) {
     );
 
     if (putRes.statusCode === 201 || putRes.statusCode === 200) {
-      const publicUrl = computeRssPublicUrlFromConfig(rssConfig);
+      const publicUrl = computeRssPublicUrlFromConfig({ ...rssConfig, filePath });
       log(`[全局 RSS] 上传成功 (HTTP ${putRes.statusCode})`, 'success');
-      log(`[全局 RSS] 公开地址: ${publicUrl}`, 'info');
+      log(`[全局 RSS] 文件地址: ${publicUrl}`, 'info');
+
+      if (fileMode === 'dated') {
+        try {
+          await syncRssIndexPage(token, owner, repoName, branch, rssConfig);
+        } catch (e) {
+          log(`[全局 RSS] 更新首页失败: ${e.message}`, 'warn');
+        }
+      }
+
+      const indexUrl = computeRssIndexUrl(rssConfig, repo);
       return {
         ok: true,
         filePath,
         repo,
         branch,
         publicUrl: publicUrl || `https://github.com/${repo}/blob/${branch}/${filePath}`,
+        indexUrl,
         status: sha ? 'updated' : 'created',
       };
     }
@@ -4631,9 +5032,122 @@ async function handlePushGlobalRssUpload(payload) {
   }
 }
 
+function computeRssIndexUrl(rssConfig, repo) {
+  const publicUrl = (rssConfig.publicUrl || '').trim();
+  if (publicUrl) return publicUrl;
+  const parts = repo.split('/');
+  if (parts.length === 2 && parts[1].endsWith('.github.io')) {
+    return `https://${parts[1]}/`;
+  }
+  return `https://github.com/${repo}`;
+}
+
+async function listRepoFeedFiles(token, owner, repoName, branch) {
+  const treeUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/git/trees/${encodeURIComponent(branch)}?recursive=1`;
+  try {
+    const res = await httpsGet(treeUrl, buildGitHubHeaders(token));
+    if (res.statusCode !== 200) return [];
+    const data = parseJsonSafely(res.data);
+    if (!data?.tree) return [];
+    return data.tree
+      .filter((f) => f.path && f.path.endsWith('.xml') && f.path !== 'feed.xml' && f.path !== 'index.xml')
+      .map((f) => {
+        const dateMatch = f.path.match(/(\d{4}-\d{2}-\d{2})/);
+        return { path: f.path, date: dateMatch ? dateMatch[1] : '', size: f.size || 0 };
+      })
+      .sort((a, b) => b.date.localeCompare(a.date));
+  } catch {
+    return [];
+  }
+}
+
+function buildRssIndexHtml(rssConfig, feedFiles) {
+  const title = escapeXml(rssConfig.title || 'GitHub Scout RSS');
+  const desc = escapeXml(rssConfig.description || '');
+
+  const fileRows = feedFiles.map((f) => {
+    const displayDate = f.date || f.path.replace(/\.xml$/, '').split('-').slice(-3).join('-');
+    const sizeKb = (f.size / 1024).toFixed(1);
+    return [
+      '      <tr>',
+      `        <td style="padding:8px 12px;border-bottom:1px solid #30363d;">${escapeXml(displayDate)}</td>`,
+      `        <td style="padding:8px 12px;border-bottom:1px solid #30363d;"><a href="${escapeXml(f.path)}" style="color:#58a6ff;text-decoration:none;">${escapeXml(f.path)}</a></td>`,
+      `        <td style="padding:8px 12px;border-bottom:1px solid #30363d;text-align:right;">${sizeKb} KB</td>`,
+      '      </tr>',
+    ].join('\n');
+  }).join('\n');
+
+  return [
+    '<!DOCTYPE html>',
+    '<html lang="zh-CN">',
+    '<head>',
+    '  <meta charset="UTF-8">',
+    '  <meta name="viewport" content="width=device-width, initial-scale=1.0">',
+    `  <title>${title}</title>`,
+    '  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">',
+    '  <style>',
+    '    body { font-family: "Google Sans", "Noto Sans SC", sans-serif; background: #0d1117; color: #c9d1d9; max-width: 800px; margin: 0 auto; padding: 40px 20px; }',
+    '    h1 { color: #f0f6fc; font-size: 24px; margin-bottom: 4px; }',
+    '    .subtitle { color: #8b949e; font-size: 14px; margin-bottom: 24px; }',
+    '    table { width: 100%; border-collapse: collapse; }',
+    '    th { text-align: left; padding: 8px 12px; border-bottom: 1px solid #21262d; color: #8b949e; font-size: 12px; font-weight: 600; }',
+    '    tr:hover td { background: #161b22; }',
+    '    .footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #21262d; font-size: 12px; color: #484f58; }',
+    '  </style>',
+    '</head>',
+    '<body>',
+    `  <h1>${title}</h1>`,
+    desc ? `  <p class="subtitle">${escapeXml(desc)}</p>` : '',
+    '  <table>',
+    '    <thead><tr><th>日期</th><th>文件</th><th style="text-align:right;">大小</th></tr></thead>',
+    '    <tbody>',
+    fileRows || '      <tr><td colspan="3" style="padding:16px;color:#484f58;text-align:center;">暂无 RSS 文件</td></tr>',
+    '    </tbody>',
+    '  </table>',
+    '  <div class="footer">GitHub Scout RSS &middot; 点击文件链接即可在 RSS 阅读器中订阅</div>',
+    '</body>',
+    '</html>',
+  ].join('\n');
+}
+
+async function syncRssIndexPage(token, owner, repoName, branch, rssConfig) {
+  const feedFiles = await listRepoFeedFiles(token, owner, repoName, branch);
+  log(`[全局 RSS] 发现 ${feedFiles.length} 个 RSS 文件`, 'info');
+  const html = buildRssIndexHtml(rssConfig, feedFiles);
+  const indexPath = 'index.html';
+  const apiPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/contents/${encodeURIComponent(indexPath)}`;
+
+  let sha = null;
+  try {
+    const getRes = await httpsGet(
+      `https://api.github.com${apiPath}?ref=${encodeURIComponent(branch)}`,
+      buildGitHubHeaders(token),
+    );
+    if (getRes.statusCode === 200) {
+      const parsed = parseJsonSafely(getRes.data);
+      if (parsed?.sha) sha = parsed.sha;
+    }
+  } catch { /* file doesn't exist yet */ }
+
+  const body = {
+    message: 'Update RSS index',
+    content: Buffer.from(html, 'utf-8').toString('base64'),
+    branch,
+  };
+  if (sha) body.sha = sha;
+
+  await httpsRequest(
+    `https://api.github.com${apiPath}`,
+    { headers: buildGitHubHeaders(token) },
+    JSON.stringify(body),
+    'PUT',
+  );
+  log('[全局 RSS] 首页目录已更新', 'success');
+}
+
 function handleLoadGlobalRss() {
   const config = loadEmailPushConfig();
-  return { ok: true, rss: config.rss || { enabled: false, repo: '', branch: 'main', filePath: 'feed.xml', commitMessage: 'Update RSS feed', title: '', description: '', link: '', publicUrl: '' } };
+  return { ok: true, rss: config.rss || { enabled: false, repo: '', branch: 'main', filePath: 'feed.xml', fileMode: 'dated', commitMessage: 'Update RSS feed', title: '', description: '', link: '', publicUrl: '', maxItems: 200 } };
 }
 
 function handleSaveGlobalRss(rssConfig) {
@@ -4649,6 +5163,8 @@ function handleSaveGlobalRss(rssConfig) {
       description: rssConfig.description || '',
       link: rssConfig.link || '',
       publicUrl: rssConfig.publicUrl || '',
+      fileMode: rssConfig.fileMode || 'dated',
+      maxItems: rssConfig.maxItems || 200,
     };
     saveEmailPushConfig(config);
     log('[全局 RSS] 设置已保存', 'success');
@@ -4807,8 +5323,87 @@ function handleRollbackPrompt(key, versionIndex) {
   return { ok: true, text: target.text, version: target.version };
 }
 
+function patchLatestCarouselFooterFontSize(fontSize) {
+  const dir = README_CAROUSEL_RUNS_DIR;
+  if (!fs.existsSync(dir)) return { ok: false, message: '没有找到车播输出目录。' };
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const dirs = entries
+    .filter((e) => e.isDirectory())
+    .map((e) => ({ name: e.name, path: path.join(dir, e.name) }))
+    .sort((a, b) => b.name.localeCompare(a.name));
+  for (const runDir of dirs) {
+    const manifestPath = path.join(runDir.path, 'manifest.json');
+    const indexHtmlPath = path.join(runDir.path, 'index.html');
+    if (!fs.existsSync(manifestPath) || !fs.existsSync(indexHtmlPath)) continue;
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      const items = (manifest.items || []).map((item) => ({
+        title: item.title,
+        repoName: item.repoName,
+        repoUrl: item.repoUrl,
+        htmlEntryPath: item.htmlEntryPath || item.htmlFileName,
+        audioEntryPath: item.audioEntryPath || item.audioFileName,
+        audioDurationMs: item.audioDurationMs || null,
+      }));
+      const soundPath = path.join(runDir.path, 'page-turn-sound.mp3');
+      const pageTurnSoundEntryPath = fs.existsSync(soundPath) ? soundPath : '';
+      fs.writeFileSync(indexHtmlPath, buildCarouselIndexHtml(items, pageTurnSoundEntryPath, fontSize), 'utf8');
+      log(`[README] 已更新车播底部字号: ${fontSize}px → ${indexHtmlPath}`, 'success');
+      return { ok: true, path: indexHtmlPath, fontSize };
+    } catch (e) {
+      log(`[README] 车播字号补丁失败: ${runDir.path} - ${e.message}`, 'warn');
+      continue;
+    }
+  }
+  log('[README] 没有找到可修补的车播输出。', 'warn');
+  return { ok: false, message: '没有找到可修补的车播输出。' };
+}
+
+function handleLoadRepoHistory(page = 1, pageSize = 200) {
+  const analysis = loadRepoAnalysis();
+  const repos = analysis.repos || [];
+
+  // 扫描所有车播 manifest，找出已生成过 HTML 的仓库
+  const carouselRepos = new Set();
+  if (fs.existsSync(README_CAROUSEL_RUNS_DIR)) {
+    const entries = fs.readdirSync(README_CAROUSEL_RUNS_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const manifestPath = path.join(README_CAROUSEL_RUNS_DIR, entry.name, 'manifest.json');
+      if (!fs.existsSync(manifestPath)) continue;
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        for (const item of (manifest.items || [])) {
+          if (item.repoName) carouselRepos.add(item.repoName);
+        }
+      } catch (e) {
+        // 跳过损坏的 manifest
+      }
+    }
+  }
+
+  const enriched = repos.map((repo) => ({
+    ...repo,
+    hasCarousel: carouselRepos.has(repo.name),
+  }));
+
+  const start = (page - 1) * pageSize;
+  const pageItems = enriched.slice(start, start + pageSize);
+
+  return {
+    ok: true,
+    repos: pageItems,
+    total: enriched.length,
+    page,
+    pageSize,
+    hasMore: start + pageSize < enriched.length,
+    carouselCount: carouselRepos.size,
+  };
+}
+
 module.exports = {
   handleFetchRepos, handleAnalyzeWithAI, handleFetchSelectedReadmes, handleTestConnection,
+  patchLatestCarouselFooterFontSize, handleLoadRepoHistory,
   loadSettings, saveSettings,
   handleStartGitHubLogin, handlePollGitHubToken, handleLoginWithPat, handleGetAuthStatus, handleLogout,
   handleSaveAiConfig, handleLoadAiConfig,

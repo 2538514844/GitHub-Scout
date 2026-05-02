@@ -181,6 +181,36 @@ textarea {
   color: var(--accent);
 }
 
+.rss-publish-btn {
+  padding: 7px 16px;
+  background: rgba(230, 126, 34, 0.12);
+  border: 1px solid rgba(230, 126, 34, 0.25);
+  border-radius: 6px;
+  color: var(--accent-orange);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.rss-publish-btn:hover:not(:disabled) {
+  background: rgba(230, 126, 34, 0.2);
+  border-color: var(--accent-orange);
+}
+
+.rss-publish-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rss-publish-btn.loading {
+  background: rgba(230, 126, 34, 0.08);
+}
+
 .filter-btn {
   padding: 7px 16px;
   background: var(--bg-tertiary);
@@ -2942,4 +2972,209 @@ textarea {
   min-height: 120px;
   max-height: 200px;
   cursor: default;
+}
+
+/* ========== Repo History Panel ========== */
+.repo-history-panel {
+  padding: 10px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.repo-history-header {
+  flex-shrink: 0;
+  margin-bottom: 8px;
+}
+
+.repo-history-stats {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.repo-history-carousel-stat {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--accent);
+}
+
+.repo-history-search {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 11px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.repo-history-search:focus {
+  border-color: var(--accent);
+}
+
+.repo-history-search::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.6;
+}
+
+.repo-history-empty,
+.repo-history-loading,
+.repo-history-error {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 30px 0;
+}
+
+.repo-history-error {
+  color: var(--danger);
+}
+
+.repo-history-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.repo-history-card {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  transition: border-color 0.12s;
+}
+
+.repo-history-card:hover {
+  border-color: var(--accent);
+}
+
+.repo-history-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.repo-history-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.repo-history-name:hover {
+  text-decoration: underline;
+}
+
+.repo-history-carousel-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: rgba(88, 166, 255, 0.12);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.repo-history-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-bottom: 3px;
+}
+
+.repo-history-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(88, 166, 255, 0.08);
+  color: var(--accent);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.repo-history-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  margin-bottom: 4px;
+}
+
+.repo-history-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.repo-history-stat {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.repo-history-date {
+  margin-left: auto;
+  opacity: 0.6;
+}
+
+.repo-history-loading-more {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 10px;
+  padding: 8px 0;
+}
+
+.repo-history-end {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 10px;
+  padding: 12px 0 20px;
+  opacity: 0.5;
+}
+
+.repo-history-show-more {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.repo-history-show-more:hover {
+  background: var(--bg-secondary);
+  color: var(--accent);
+  border-color: var(--accent);
 }

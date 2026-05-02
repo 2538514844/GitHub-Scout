@@ -37,6 +37,8 @@ const {
   handleResetPrompt,
   handleGetPromptHistory,
   handleRollbackPrompt,
+  patchLatestCarouselFooterFontSize,
+  handleLoadRepoHistory,
   logEmitter,
 } = require('./ipc');
 const {
@@ -44,6 +46,8 @@ const {
   savePresentationConfig,
   preparePresentationSession,
   loadPresentationManifest,
+  findLatestCarouselManifest,
+  buildPlaylistFromCarouselManifest,
   testPresentationTts,
 } = require('./presentation');
 
@@ -99,6 +103,8 @@ function transcodeToMp4(sourcePath, targetPath) {
       '-hide_banner',
       '-loglevel',
       'error',
+      '-progress',
+      'pipe:1',
       '-i',
       sourcePath,
       '-map',
@@ -134,6 +140,14 @@ function transcodeToMp4(sourcePath, targetPath) {
     const child = spawn(ffmpegPath, args, { windowsHide: true });
     child.stderr.on('data', (chunk) => {
       stderr += chunk.toString();
+    });
+    child.stdout.on('data', (chunk) => {
+      const text = chunk.toString();
+      const timeMatch = text.match(/out_time_us=(\d+)/);
+      if (timeMatch) {
+        const seconds = Number(timeMatch[1]) / 1000000;
+        logEmitter.emit('log', { time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level: 'info', message: `[录制] 转码进度: ${seconds.toFixed(0)} 秒` });
+      }
     });
     child.on('error', reject);
     child.on('close', (code) => {
@@ -356,7 +370,13 @@ app.whenReady().then(() => {
   ipcMain.handle('load-ai-config', () => handleLoadAiConfig());
 
   ipcMain.handle('load-presentation-config', () => loadPresentationConfig());
-  ipcMain.handle('save-presentation-config', (_, config) => savePresentationConfig(config));
+  ipcMain.handle('load-repo-history', (_, page = 1, pageSize = 200) => handleLoadRepoHistory(page, pageSize));
+  ipcMain.handle('save-presentation-config', (_, config) => {
+    const saved = savePresentationConfig(config);
+    const fontSize = typeof config.repoFooterFontSize === 'number' ? config.repoFooterFontSize : 14;
+    patchLatestCarouselFooterFontSize(fontSize);
+    return saved;
+  });
   ipcMain.handle('test-presentation-tts', (_, config) => testPresentationTts(config));
   ipcMain.handle('select-repo-images', async (_, payload = {}) => {
     const repoName = typeof payload.repoName === 'string' ? payload.repoName.trim() : '';
@@ -386,6 +406,22 @@ app.whenReady().then(() => {
       canceled: false,
       filePaths: result.filePaths || [],
     };
+  });
+  ipcMain.handle('load-latest-carousel-manifest', async () => {
+    try {
+      const manifestPath = findLatestCarouselManifest();
+      if (!manifestPath) {
+        return { ok: false, notFound: true };
+      }
+      const playlist = buildPlaylistFromCarouselManifest(manifestPath);
+      return {
+        ok: true,
+        path: manifestPath,
+        content: JSON.stringify(playlist, null, 2),
+      };
+    } catch (error) {
+      return { ok: false, message: error.message };
+    }
   });
   ipcMain.handle('select-presentation-manifest', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {

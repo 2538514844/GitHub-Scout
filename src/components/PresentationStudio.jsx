@@ -5,14 +5,14 @@ const DEFAULT_PLAYLIST = `{
   "items": [
     {
       "title": "页面 1",
-      "htmlPath": "C:\\\\path\\\\to\\\\page-1.html",
+      "url": "https://example.com",
       "ttsText": "这里填写页面一的解说词。",
       "pageReadyDelayMs": 800,
       "holdAfterAudioMs": 400
     },
     {
       "title": "页面 2",
-      "url": "https://example.com",
+      "url": "https://github.com",
       "ttsText": "这里填写页面二的解说词。",
       "pageReadyDelayMs": 800,
       "holdAfterAudioMs": 400
@@ -148,6 +148,18 @@ function PresentationStudio() {
     setErrorMessage('');
 
     try {
+      // 优先自动检测最新生成的 README 车播
+      const latest = await window.electronAPI.loadLatestCarouselManifest();
+      if (latest?.ok) {
+        setConfig((current) => ({
+          ...current,
+          playlistText: latest.content || DEFAULT_PLAYLIST,
+        }));
+        setSaveMessage(`已自动载入最新车播清单：${latest.path}`);
+        return;
+      }
+
+      // 没有则手动选择
       const result = await window.electronAPI.selectPresentationManifest();
       if (!result?.ok) {
         if (!result?.canceled && result?.message) {

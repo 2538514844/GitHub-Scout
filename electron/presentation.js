@@ -8,6 +8,7 @@ const { injectLocalImageRuntimeStyle } = require('./local-image-runtime');
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const PRESENTATION_SETTINGS_FILE = path.join(DATA_DIR, 'presentation-settings.json');
 const TTS_CACHE_DIR = path.join(DATA_DIR, 'tts-cache');
+const README_CAROUSEL_RUNS_DIR = path.join(DATA_DIR, 'readme-carousel-runs');
 
 const DEFAULT_PRESENTATION_CONFIG = {
   tts: {
@@ -52,7 +53,12 @@ function readJsonFile(filePath, fallback) {
 
 function writeJsonFile(filePath, value) {
   ensureDir(path.dirname(filePath));
-  fs.writeFileSync(filePath, JSON.stringify(value, null, 2), 'utf8');
+  const tmp = filePath + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');
+  try {
+    if (fs.existsSync(filePath)) fs.copyFileSync(filePath, filePath + '.bak');
+  } catch (_) { /* backup non-critical */ }
+  fs.renameSync(tmp, filePath);
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -117,6 +123,7 @@ function loadPresentationConfig() {
   return {
     tts: normalizeTtsConfig(saved.tts),
     player: normalizePlayerConfig(saved.player),
+    repoFooterFontSize: typeof saved.repoFooterFontSize === 'number' ? saved.repoFooterFontSize : 14,
     playlistText: typeof saved.playlistText === 'string' ? saved.playlistText : '',
   };
 }
@@ -125,6 +132,7 @@ function savePresentationConfig(config = {}) {
   const next = {
     tts: normalizeTtsConfig(config.tts),
     player: normalizePlayerConfig(config.player),
+    repoFooterFontSize: typeof config.repoFooterFontSize === 'number' ? config.repoFooterFontSize : 14,
     playlistText: typeof config.playlistText === 'string' ? config.playlistText : '',
   };
 
@@ -242,7 +250,7 @@ function normalizePresentationItems(rawItems, playerConfig) {
       throw new Error(`第 ${index + 1} 个网页的 ttsText 超过 MiniMax 同步 TTS 的 10000 字限制。`);
     }
 
-    return {
+    const result = {
       id: `presentation-item-${index + 1}`,
       title,
       ttsText: narration,
@@ -266,55 +274,78 @@ function normalizePresentationItems(rawItems, playerConfig) {
       ),
       page: buildPageSource(item),
     };
+    if (item.audioPath) result.audioPath = item.audioPath;
+    if (item.audioDurationMs) result.audioDurationMs = item.audioDurationMs;
+    return result;
   });
 }
 
-function httpsPostJson(url, token, payload) {
+function shouldRetryNetworkError(err) {
+  if (!err) return false;
+  const msg = (err.message || '').toLowerCase();
+  const code = (err.code || '').toUpperCase();
+  const retryCodes = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EPIPE', 'EPROTO', 'ECONNABORTED']);
+  const retryMessages = ['socket disconnected', 'tls', 'ssl', 'network', 'connect'];
+  return retryCodes.has(code) || retryMessages.some((k) => msg.includes(k));
+}
+
+function httpsPostJson(url, token, payload, retries = 2) {
   return new Promise((resolve, reject) => {
     const target = new URL(url);
     const body = JSON.stringify(payload);
 
-    const request = https.request({
-      protocol: target.protocol,
-      hostname: target.hostname,
-      port: target.port || (target.protocol === 'https:' ? 443 : 80),
-      path: `${target.pathname}${target.search}`,
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body),
-      },
-      timeout: 60000,
-    }, (response) => {
-      const chunks = [];
-      response.on('data', (chunk) => chunks.push(chunk));
-      response.on('end', () => {
-        const text = Buffer.concat(chunks).toString('utf8');
-        let json = null;
-        try {
-          json = JSON.parse(text);
-        } catch {
-          reject(new Error(`MiniMax 返回了无法解析的响应（HTTP ${response.statusCode}）。`));
-          return;
-        }
+    const doRequest = (attempt) => {
+      const request = https.request({
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || (target.protocol === 'https:' ? 443 : 80),
+        path: `${target.pathname}${target.search}`,
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        },
+        timeout: 60000,
+        rejectUnauthorized: false,
+      }, (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          let json = null;
+          try {
+            json = JSON.parse(text);
+          } catch {
+            reject(new Error(`MiniMax 返回了无法解析的响应（HTTP ${response.statusCode}）。`));
+            return;
+          }
 
-        if (response.statusCode < 200 || response.statusCode >= 300) {
-          const message = json?.base_resp?.status_msg || json?.message || `HTTP ${response.statusCode}`;
-          reject(new Error(`MiniMax TTS 请求失败：${message}`));
-          return;
-        }
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            const message = json?.base_resp?.status_msg || json?.message || `HTTP ${response.statusCode}`;
+            reject(new Error(`MiniMax TTS 请求失败：${message}`));
+            return;
+          }
 
-        resolve(json);
+          resolve(json);
+        });
       });
-    });
 
-    request.on('timeout', () => {
-      request.destroy(new Error('MiniMax TTS 请求超时。'));
-    });
-    request.on('error', reject);
-    request.write(body);
-    request.end();
+      request.on('timeout', () => {
+        request.destroy(new Error('MiniMax TTS 请求超时。'));
+      });
+      request.on('error', (err) => {
+        if (attempt < retries && shouldRetryNetworkError(err)) {
+          setTimeout(() => doRequest(attempt + 1), 800 * (attempt + 1));
+          return;
+        }
+        reject(err);
+      });
+      request.write(body);
+      request.end();
+    };
+
+    doRequest(0);
   });
 }
 
@@ -594,7 +625,17 @@ async function preparePresentationSession(payload = {}, onProgress = () => {}) {
       title: item.title,
     });
 
-    const audio = await synthesizeTtsToCache(item.ttsText, ttsConfig);
+    let audio;
+    if (item.audioPath && item.audioDurationMs && fs.existsSync(item.audioPath)) {
+      audio = {
+        audioUrl: pathToFileURL(item.audioPath).href,
+        audioPath: item.audioPath,
+        durationMs: item.audioDurationMs,
+        cached: true,
+      };
+    } else {
+      audio = await synthesizeTtsToCache(item.ttsText, ttsConfig);
+    }
     preparedItems.push({
       ...item,
       audioUrl: audio.audioUrl,
@@ -649,12 +690,43 @@ function loadPresentationManifest(manifestPath) {
   };
 }
 
+function findLatestCarouselManifest() {
+  if (!fs.existsSync(README_CAROUSEL_RUNS_DIR)) return null;
+  const entries = fs.readdirSync(README_CAROUSEL_RUNS_DIR, { withFileTypes: true });
+  const dirs = entries
+    .filter((e) => e.isDirectory())
+    .map((e) => ({ name: e.name, path: path.join(README_CAROUSEL_RUNS_DIR, e.name) }))
+    .sort((a, b) => b.name.localeCompare(a.name));
+  for (const dir of dirs) {
+    const candidate = path.join(dir.path, 'manifest.json');
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function buildPlaylistFromCarouselManifest(manifestPath) {
+  const raw = fs.readFileSync(manifestPath, 'utf8');
+  const manifest = JSON.parse(raw);
+  const manifestDir = path.dirname(manifestPath);
+  const carouselItems = manifest.items || [];
+  const items = carouselItems.map((item) => ({
+    title: item.title || item.repoName || 'Untitled',
+    htmlPath: item.htmlEntryPath ? path.resolve(manifestDir, item.htmlEntryPath) : '',
+    ttsText: item.title || item.repoName || 'Untitled',
+    audioPath: item.audioEntryPath ? path.resolve(manifestDir, item.audioEntryPath) : '',
+    audioDurationMs: item.audioDurationMs || 0,
+  }));
+  return { items };
+}
+
 module.exports = {
   DEFAULT_PRESENTATION_CONFIG,
   loadPresentationConfig,
   savePresentationConfig,
   preparePresentationSession,
   loadPresentationManifest,
+  findLatestCarouselManifest,
+  buildPlaylistFromCarouselManifest,
   synthesizeTtsToCache,
   testPresentationTts,
 };

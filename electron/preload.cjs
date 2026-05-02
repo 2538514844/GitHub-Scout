@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   savePresentationConfig: (config) => ipcRenderer.invoke('save-presentation-config', config),
   testPresentationTts: (config) => ipcRenderer.invoke('test-presentation-tts', config),
   selectPresentationManifest: () => ipcRenderer.invoke('select-presentation-manifest'),
+  loadLatestCarouselManifest: () => ipcRenderer.invoke('load-latest-carousel-manifest'),
+  loadRepoHistory: (page, pageSize) => ipcRenderer.invoke('load-repo-history', page, pageSize),
   preparePresentationSession: (payload) => ipcRenderer.invoke('prepare-presentation-session', payload),
 
   getAuthStatus: () => ipcRenderer.invoke('get-auth-status'),

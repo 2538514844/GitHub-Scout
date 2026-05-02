@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 
-export default function PromptEditorPanel({ onClose }) {
+export default function PromptEditorPanel() {
   const [prompts, setPrompts] = useState([]);
   const [values, setValues] = useState({});
   const [selectedKey, setSelectedKey] = useState(null);
@@ -164,7 +164,7 @@ export default function PromptEditorPanel({ onClose }) {
     <div className="prompt-editor-panel">
       <div className="prompt-editor-header">
         <h3>提示词编辑器</h3>
-        <button className="close-btn" onClick={onClose}>✕</button>
+
       </div>
 
       <input
