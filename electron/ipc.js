@@ -298,17 +298,18 @@ function getPromptRegistry() {
         '- 列出没有归入主要模块但仍有亮点的仓库',
         '',
         '要求：',
-        '1. 模块名称根据仓库标签动态生成，不要用固定模板',
-        '2. 每个仓库必须包含：加粗的仓库名、可点击的GitHub链接、⭐+Stars数、描述',
-        '3. 每个仓库描述控制在20~50字，聚焦项目解决了什么问题、有什么特色',
-        '4. 少用"革命性""震撼""颠覆"等浮夸形容词，直接描述价值',
-        '5. 使用自然流畅的中文，不要堆砌关键词',
-        '6. 不要提及"该仓库""这个项目"等冗余开头，直接描述',
-        '7. 同一模块内的仓库按Stars从高到低排列',
-        '8. Stars超过1000的项目描述末尾加 🏆',
-        '9. 全文使用Markdown格式，方便直接渲染',
-        '10. 不使用代码块包裹，直接输出Markdown正文',
-        '11. 不要输出任何前言、后记、免责声明或非文章内容',
+        '1. 模块名称根据仓库的标签动态生成，不要用固定模板',
+        '2. 每个仓库必须包含：加粗的仓库名、可点击的GitHub链接（已提供在数据中）、⭐+Stars数、原创描述',
+        '3. 每个仓库的描述必须原创撰写，50~100字，不要照搬输入数据中可能已有的简短介绍',
+        '4. 描述要具体：这个仓库解决什么技术问题、用了什么技术方案、适合谁用',
+        '5. 少用"革命性""震撼""颠覆"等浮夸形容词，直接描述价值',
+        '6. 使用自然流畅的中文，不要堆砌关键词',
+        '7. 不要提及"该仓库""这个项目"等冗余开头，直接描述',
+        '8. 同一模块内的仓库按Stars从高到低排列',
+        '9. Stars超过1000的项目描述末尾加 🏆',
+        '10. 全文使用Markdown格式，方便直接渲染',
+        '11. 不使用代码块包裹，直接输出Markdown正文',
+        '12. 不要输出任何前言、后记、免责声明或非文章内容',
       ].join('\n'),
       filePath: null,
     },
@@ -5175,16 +5176,15 @@ async function handleGenerateDailyArticle(payload) {
   // 按 Stars 排序
   const sorted = [...payload.repos].sort((a, b) => (b.stars || 0) - (a.stars || 0));
 
-  // 构建仓库数据列表
+  // 构建仓库数据列表（不包含旧描述，避免 AI 偷懒照抄）
   const repoLines = sorted.map((r) => {
     const name = r.name || '';
     const url = r.url || `https://github.com/${name}`;
-    const desc = r.aiDescription || r.description || '';
     const stars = r.stars || 0;
     const forks = r.forks || 0;
     const tags = (r.aiTags || []).join(', ');
     const lang = r.language || '';
-    return `- ${name} | Stars:${stars} | Forks:${forks} | ${lang} | 标签:${tags || '无'} | ${desc}`;
+    return `- ${name} | GitHub:${url} | Stars:${stars} | Forks:${forks} | ${lang} | 标签:${tags || '无'}`;
   }).join('\n');
 
   const today = new Date();
