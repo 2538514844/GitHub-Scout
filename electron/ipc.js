@@ -282,7 +282,7 @@ function getPromptRegistry() {
         '',
         '## 输出结构（必须严格遵守）',
         '',
-        '文章第一行必须是：# [日期] GitHub 开源项目精选',
+        '文章第一行必须是：# 当天日期 GitHub 开源项目精选（日期已由系统提供，直接用 user 消息中的日期）',
         '',
         '之后按以下模块组织：',
         '',
@@ -5192,7 +5192,7 @@ async function handleGenerateDailyArticle(payload) {
 
   const messages = [
     { role: 'system', content: promptText },
-    { role: 'user', content: `请根据以下仓库列表撰写一篇结构化文章：\n\n${repoLines}` },
+    { role: 'user', content: `今天是 ${dateStr}。请根据以下仓库列表撰写一篇结构化文章：\n\n${repoLines}` },
   ];
 
   log('[每日文章] 开始生成...', 'info');
@@ -5212,9 +5212,13 @@ async function handleGenerateDailyArticle(payload) {
     // 清理可能的代码块包裹
     article = article.replace(/^```(?:markdown|md)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
 
-    // 确保第一行是标题格式
-    if (!article.startsWith('# ')) {
-      article = `# [${dateStr}] GitHub 开源项目精选\n\n${article}`;
+    // 强制修正第一行为当天日期标题（AI 经常胡编日期）
+    const titleLine = `# ${dateStr} GitHub 开源项目精选`;
+    const firstLineEnd = article.indexOf('\n');
+    if (firstLineEnd > 0) {
+      article = titleLine + article.slice(firstLineEnd);
+    } else {
+      article = titleLine + '\n\n' + article;
     }
 
     // 保存到 juya BACKUP/
