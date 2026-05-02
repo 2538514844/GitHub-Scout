@@ -117,6 +117,8 @@ function transcodeToMp4(sourcePath, targetPath) {
       'h264_nvenc',
       '-preset',
       'p4',
+      '-rc',
+      'constqp',
       '-qp',
       '18',
       '-maxrate',
