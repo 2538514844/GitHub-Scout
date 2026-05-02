@@ -77,3 +77,6 @@ coverage/
 
 # 类型脚本构建输出
 *.tsbuildinfo
+scripts/publish-index.js
+scripts/publish-test-rss.js
+.claude/

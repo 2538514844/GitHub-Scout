@@ -4919,6 +4919,11 @@ async function handlePushGlobalRssUpload(payload) {
     // 每个仓库生成一个 .md 到 BACKUP/（Zola 渲染用）
     const backupDir = path.join(juyaDir, 'BACKUP');
     if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir);
+    // 清理旧文件（isite 需要 {number}_{date}.md 格式）
+    const oldFiles = fs.readdirSync(backupDir).filter(f => f.endsWith('.md'));
+    for (const f of oldFiles) fs.unlinkSync(path.join(backupDir, f));
+
+    const todayStr = new Date().toISOString().slice(0, 10);
     let mdCount = 0;
     for (const repo of reposWithIntros) {
       const name = repo.name || '';
@@ -4954,25 +4959,35 @@ async function handlePushGlobalRssUpload(payload) {
         '',
       ].join('\n');
 
-      const filename = name.replace(/[<>:"/\\\\|?*]/g, '_').replace(/\//g, '_') + '.md';
+      // isite 需要 {number}_{date}.md 文件名格式
+      const idx = String(mdCount).padStart(4, '0');
+      const filename = `${idx}_${todayStr}.md`;
       fs.writeFileSync(path.join(backupDir, filename), md, 'utf-8');
       mdCount++;
     }
     log(`[全局 RSS] 已同步到 juya: rss.xml + ${mdCount} 个 .md -> BACKUP/`, 'success');
 
-    // 自动 git push 触发网站构建
-    exec('git add -A && git commit -m "更新仓库推荐 [GitHub Scout]" && git push', { cwd: juyaDir }, (err, stdout, stderr) => {
-      if (err) {
-        const msg = (stderr || err.message || '').trim();
-        if (msg.includes('nothing to commit')) {
-          log('[全局 RSS] 内容无变化，跳过推送', 'info');
+    // 自动 git push 触发网站构建（最多重试 3 次）
+    const tryPush = (attempt) => {
+      exec('git add -A && git commit -m "更新仓库推荐 [GitHub Scout]" && git push origin master', { cwd: juyaDir }, (err, stdout, stderr) => {
+        if (err) {
+          const msg = (stderr || err.message || '').trim();
+          if (msg.includes('nothing to commit')) {
+            log('[全局 RSS] 内容无变化，跳过推送', 'info');
+            return;
+          }
+          if (attempt < 3 && (msg.includes('Connection') || msg.includes('reset') || msg.includes('timeout'))) {
+            log(`[全局 RSS] git push 重试 ${attempt}/3...`, 'info');
+            setTimeout(() => tryPush(attempt + 1), 3000);
+            return;
+          }
+          log(`[全局 RSS] git push 失败: ${msg}`, 'warn');
           return;
         }
-        log(`[全局 RSS] git push 失败: ${msg}`, 'warn');
-        return;
-      }
-      log('[全局 RSS] 已推送，网站即将更新: https://2538514844.github.io/juya-ai-daily/', 'success');
-    });
+        log('[全局 RSS] 已推送，网站即将更新: https://2538514844.github.io/juya-ai-daily/', 'success');
+      });
+    };
+    tryPush(1);
   } catch (e) {
     log(`[全局 RSS] 同步 juya 失败: ${e.message}`, 'warn');
   }
