@@ -271,6 +271,44 @@ function getPromptRegistry() {
       defaultText: '你是一个GitHub项目推荐编辑。请为以下仓库各写一句20~50字的中文介绍，适合邮件订阅者阅读。\n\n要求：\n1. 每行一个仓库，格式：仓库名|介绍\n2. 介绍控制在20~50个汉字，有吸引力\n3. 突出项目亮点和实用价值，让读者有点击欲望\n4. 使用自然流畅的中文，不要堆砌关键词\n5. 不要包含标签、star数等元数据，纯文字介绍\n6. 不要提及"该仓库""这个项目"等冗余开头，直接描述',
       filePath: null,
     },
+    {
+      key: 'dailyArticlePrompt',
+      name: '每日精选文章系统提示词',
+      category: 'RSS & Email',
+      isTemplate: false,
+      templateVars: [],
+      defaultText: [
+        '你是一个GitHub开源项目精选编辑。请根据以下仓库列表，撰写一篇结构化的技术文章。',
+        '',
+        '## 输出结构（必须严格遵守）',
+        '',
+        '文章第一行必须是：# [日期] GitHub 开源项目精选',
+        '',
+        '之后按以下模块组织：',
+        '',
+        '## 概览',
+        '- 用一段话概括本期精选的整体趋势和亮点',
+        '',
+        '## 模块名称（根据仓库的实际类别动态命名，如：AI/大模型、开发工具、前端框架、安全工具、效率工具 等）',
+        '- 每个模块下面列出属于该类的仓库',
+        '- 每个仓库格式（严格）：',
+        '  - **[仓库名](GitHub链接)** ⭐ Stars数 — 一句话描述该项目解决的问题和亮点',
+        '',
+        '## 更多值得关注',
+        '- 列出没有归入主要模块但仍有亮点的仓库',
+        '',
+        '要求：',
+        '1. 模块名称根据仓库标签动态生成，不要用固定模板',
+        '2. 每个仓库必须包含：加粗的仓库名、可点击的GitHub链接、⭐+Stars数、描述',
+        '3. 描述突出"解决什么问题"而非"是什么"',
+        '4. 同一模块内的仓库按Stars从高到低排列',
+        '5. Stars超过1000的项目描述末尾加 🏆',
+        '6. 全文使用Markdown格式，方便直接渲染',
+        '7. 不使用代码块包裹，直接输出Markdown正文',
+        '8. 不要输出任何前言、后记、免责声明或非文章内容',
+      ].join('\n'),
+      filePath: null,
+    },
   ];
 }
 
@@ -4839,7 +4877,7 @@ async function handlePushGlobalRssUpload(payload) {
     return { ok: false, message: '请先在 GitHub 登录中完成认证（需要 repo 权限的 PAT）' };
   }
 
-  const branch = (rssConfig.branch || 'main').trim();
+  let branch = (rssConfig.branch || 'master').trim();
   const commitMessage = (rssConfig.commitMessage || 'Update RSS feed').trim();
   const fileMode = rssConfig.fileMode || 'dated';
   const [owner, repoName] = repo.split('/').map((s) => s.trim());
@@ -4916,58 +4954,73 @@ async function handlePushGlobalRssUpload(payload) {
     const juyaDir = 'E:/Downloads/juya-ai-daily-master';
     fs.writeFileSync(path.join(juyaDir, 'rss.xml'), finalXml, 'utf-8');
 
-    // 每个仓库生成一个 .md 到 BACKUP/（Zola 渲染用）
     const backupDir = path.join(juyaDir, 'BACKUP');
     if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir);
-    // 清理旧文件（isite 需要 {number}_{date}.md 格式）
     const oldFiles = fs.readdirSync(backupDir).filter(f => f.endsWith('.md'));
     for (const f of oldFiles) fs.unlinkSync(path.join(backupDir, f));
 
     const todayStr = new Date().toISOString().slice(0, 10);
-    let mdCount = 0;
-    for (const repo of reposWithIntros) {
-      const name = repo.name || '';
-      const url = repo.url || `https://github.com/${name}`;
-      const desc = repo.rssIntro || repo.aiDescription || repo.description || '';
-      const stars = repo.stars || 0;
-      const forks = repo.forks || 0;
-      const lang = repo.language || '';
-      const tags = repo.aiTags || [];
-      const dateStr = (repo.created || repo.updated || '').slice(0, 10);
 
-      const stats = [`⭐ ${stars}`];
-      if (forks) stats.push(`🍴 ${forks}`);
-      if (lang && lang !== 'N/A') stats.push(lang);
-      if (dateStr) stats.push(dateStr);
-
-      const tagSpans = tags.filter(Boolean).map(t => '`' + t + '`').join(' ');
-
-      const md = [
-        `# [${name}](${url})`,
-        '',
-        stats.join(' | '),
-        '',
-        desc ? `> ${desc}` : '',
-        '',
-        tags.length ? '## 标签' : '',
-        '',
-        tagSpans || '',
-        '',
-        '---',
-        '',
-        `[查看仓库](${url})`,
-        '',
-      ].join('\n');
-
-      // isite 需要 {number}_{date}.md 文件名格式
-      const idx = String(mdCount).padStart(4, '0');
-      const filename = `${idx}_${todayStr}.md`;
-      fs.writeFileSync(path.join(backupDir, filename), md, 'utf-8');
-      mdCount++;
+    // 先生成 AI 精选文章
+    let articleSaved = false;
+    try {
+      const articleResult = await handleGenerateDailyArticle({ repos: reposWithIntros });
+      if (articleResult.ok) {
+        // 文章已由 handleGenerateDailyArticle 写入 BACKUP/
+        articleSaved = true;
+        log(`[全局 RSS] AI 文章已生成 (${articleResult.length} 字)`, 'success');
+      } else {
+        log(`[全局 RSS] AI 文章生成失败: ${articleResult.message}，回退到单仓库列表`, 'warn');
+      }
+    } catch (e) {
+      log(`[全局 RSS] AI 文章异常: ${e.message}，回退到单仓库列表`, 'warn');
     }
-    log(`[全局 RSS] 已同步到 juya: rss.xml + ${mdCount} 个 .md -> BACKUP/`, 'success');
 
-    // 自动 git push 触发网站构建（最多重试 3 次）
+    // AI 失败时回退：生成单仓库列表
+    if (!articleSaved) {
+      let mdCount = 0;
+      for (const repo of reposWithIntros) {
+        const name = repo.name || '';
+        const url = repo.url || `https://github.com/${name}`;
+        const desc = repo.rssIntro || repo.aiDescription || repo.description || '';
+        const stars = repo.stars || 0;
+        const forks = repo.forks || 0;
+        const lang = repo.language || '';
+        const tags = repo.aiTags || [];
+        const dateStr = (repo.created || repo.updated || '').slice(0, 10);
+
+        const stats = [`⭐ ${stars}`];
+        if (forks) stats.push(`🍴 ${forks}`);
+        if (lang && lang !== 'N/A') stats.push(lang);
+        if (dateStr) stats.push(dateStr);
+
+        const tagSpans = tags.filter(Boolean).map(t => '`' + t + '`').join(' ');
+
+        const md = [
+          `# [${name}](${url})`,
+          '',
+          stats.join(' | '),
+          '',
+          desc ? `> ${desc}` : '',
+          '',
+          tags.length ? '## 标签' : '',
+          '',
+          tagSpans || '',
+          '',
+          '---',
+          '',
+          `[查看仓库](${url})`,
+          '',
+        ].join('\n');
+
+        const idx = String(mdCount).padStart(4, '0');
+        fs.writeFileSync(path.join(backupDir, `${idx}_${todayStr}.md`), md, 'utf-8');
+        mdCount++;
+      }
+      log(`[全局 RSS] 已同步: rss.xml + ${mdCount} 个 .md`, 'success');
+    }
+
+    // git push
     const tryPush = (attempt) => {
       exec('git add -A && git commit -m "更新仓库推荐 [GitHub Scout]" && git push origin master', { cwd: juyaDir }, (err, stdout, stderr) => {
         if (err) {
@@ -5049,6 +5102,93 @@ async function handlePushGlobalRssUpload(payload) {
   } catch (e) {
     log(`[全局 RSS] 上传异常: ${e.message}`, 'error');
     return { ok: false, message: `上传异常: ${e.message}` };
+  }
+}
+
+// --- 每日精选文章生成 ---
+
+async function handleGenerateDailyArticle(payload) {
+  if (!payload.repos || payload.repos.length === 0) {
+    return { ok: false, message: '没有要整理的仓库' };
+  }
+
+  const settings = loadSettings();
+  const vendor = settings.vendor || 'openai';
+  const vendors = settings.vendors || {};
+  const vendorConfig = vendors[vendor] || Object.values(vendors)[0];
+  if (!vendorConfig || !vendorConfig.baseUrl || !vendorConfig.apiKey) {
+    return { ok: false, message: '请先在 AI 设置中配置模型' };
+  }
+
+  const defaultPrompt = getPromptRegistry().find(p => p.key === 'dailyArticlePrompt')?.defaultText || '';
+  const promptText = resolvePrompt('dailyArticlePrompt', defaultPrompt);
+  if (!promptText) return { ok: false, message: '未找到文章提示词' };
+
+  // 按 Stars 排序
+  const sorted = [...payload.repos].sort((a, b) => (b.stars || 0) - (a.stars || 0));
+
+  // 构建仓库数据列表
+  const repoLines = sorted.map((r) => {
+    const name = r.name || '';
+    const url = r.url || `https://github.com/${name}`;
+    const desc = r.aiDescription || r.description || '';
+    const stars = r.stars || 0;
+    const forks = r.forks || 0;
+    const tags = (r.aiTags || []).join(', ');
+    const lang = r.language || '';
+    return `- ${name} | Stars:${stars} | Forks:${forks} | ${lang} | 标签:${tags || '无'} | ${desc}`;
+  }).join('\n');
+
+  const today = new Date();
+  const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+  const messages = [
+    { role: 'system', content: promptText },
+    { role: 'user', content: `请根据以下仓库列表撰写一篇结构化文章：\n\n${repoLines}` },
+  ];
+
+  log('[每日文章] 开始生成...', 'info');
+
+  try {
+    const result = await callAiChat(
+      { baseUrl: vendorConfig.baseUrl, apiKey: vendorConfig.apiKey, model: vendorConfig.model || '' },
+      messages,
+      { maxTokens: 4096, temperature: 0.8 },
+    );
+
+    if (!result.ok || !result.content) {
+      return { ok: false, message: result.message || 'AI 生成失败' };
+    }
+
+    let article = result.content.trim();
+    // 清理可能的代码块包裹
+    article = article.replace(/^```(?:markdown|md)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
+
+    // 确保第一行是标题格式
+    if (!article.startsWith('# ')) {
+      article = `# [${dateStr}] GitHub 开源项目精选\n\n${article}`;
+    }
+
+    // 保存到 juya BACKUP/
+    const juyaDir = 'E:/Downloads/juya-ai-daily-master';
+    const backupDir = path.join(juyaDir, 'BACKUP');
+    if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir);
+
+    const filename = `0000_${dateStr}.md`;
+    const filepath = path.join(backupDir, filename);
+    fs.writeFileSync(filepath, article, 'utf-8');
+
+    log(`[每日文章] 已保存: ${filename} (${article.length} 字符)`, 'success');
+
+    return {
+      ok: true,
+      filename,
+      content: article,
+      length: article.length,
+    };
+  } catch (e) {
+    log(`[每日文章] 异常: ${e.message}`, 'error');
+    return { ok: false, message: `生成异常: ${e.message}` };
   }
 }
 
@@ -5432,6 +5572,7 @@ module.exports = {
   handlePushRssUpload, computeRssPublicUrl,
   handleLoadGlobalSmtp, handleSaveGlobalSmtp, handleTestGlobalSmtp,
   handlePushGlobalRssUpload, handleLoadGlobalRss, handleSaveGlobalRss,
+  handleGenerateDailyArticle,
   handleLoadAllPrompts, handleSavePrompt, handleResetPrompt,
   handleGetPromptHistory, handleRollbackPrompt,
   logEmitter, log,

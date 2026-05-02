@@ -32,6 +32,7 @@ const {
   handlePushGlobalRssUpload,
   handleLoadGlobalRss,
   handleSaveGlobalRss,
+  handleGenerateDailyArticle,
   handleLoadAllPrompts,
   handleSavePrompt,
   handleResetPrompt,
@@ -492,6 +493,7 @@ app.whenReady().then(() => {
   ipcMain.handle('push-global-rss-load', () => handleLoadGlobalRss());
   ipcMain.handle('push-global-rss-save', (_, rssConfig) => handleSaveGlobalRss(rssConfig));
   ipcMain.handle('push-global-rss-upload', (_, payload) => handlePushGlobalRssUpload(payload));
+  ipcMain.handle('generate-daily-article', (_, payload) => handleGenerateDailyArticle(payload));
 
   ipcMain.handle('load-all-prompts', () => handleLoadAllPrompts());
   ipcMain.handle('save-prompt', (_, key, text) => handleSavePrompt(key, text));
