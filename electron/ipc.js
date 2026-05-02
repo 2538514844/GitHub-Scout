@@ -5106,12 +5106,12 @@ async function handlePushGlobalRssUpload(payload) {
             log('[全局 RSS] 内容无变化，跳过推送', 'info');
             return;
           }
-          if (attempt < 3 && (msg.includes('Connection') || msg.includes('connect') || msg.includes('unable to access') || msg.includes('reset') || msg.includes('timeout') || msg.includes('fetch first') || msg.includes('rejected'))) {
-            log(`[全局 RSS] git push 重试 ${attempt}/3...`, 'info');
-            setTimeout(() => tryPush(attempt + 1), 3000);
+          if (attempt < 3) {
+            log(`[全局 RSS] git push 失败 (第${attempt}次)，${3 - attempt}秒后重试...`, 'warn');
+            setTimeout(() => tryPush(attempt + 1), (3 - attempt) * 2000);
             return;
           }
-          log(`[全局 RSS] git push 失败: ${msg}`, 'warn');
+          log(`[全局 RSS] git push 3次均失败: ${msg}`, 'warn');
           return;
         }
         log('[全局 RSS] 已推送，网站即将更新: https://2538514844.github.io/', 'success');
