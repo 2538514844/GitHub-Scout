@@ -99,7 +99,46 @@ function transcodeToMp4(sourcePath, targetPath) {
       return;
     }
 
-    const args = [
+    // 优先 NVENC 硬件加速，失败时回退 CPU 软编码
+    const nvencArgs = [
+      '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-progress',
+      'pipe:1',
+      '-i',
+      sourcePath,
+      '-map',
+      '0:v:0',
+      '-map',
+      '0:a?',
+      '-c:v',
+      'h264_nvenc',
+      '-preset',
+      'p4',
+      '-cq',
+      '18',
+      '-rc',
+      'vbr_hq',
+      '-maxrate',
+      '24000k',
+      '-bufsize',
+      '48000k',
+      '-g',
+      '60',
+      '-vf',
+      'scale=3840:2160:force_original_aspect_ratio=decrease,pad=3840:2160:(ow-iw)/2:(oh-ih)/2',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '320k',
+      '-movflags',
+      '+faststart',
+      targetPath,
+    ];
+
+    const cpuArgs = [
       '-y',
       '-hide_banner',
       '-loglevel',
@@ -137,27 +176,41 @@ function transcodeToMp4(sourcePath, targetPath) {
       targetPath,
     ];
 
-    let stderr = '';
-    const child = spawn(ffmpegPath, args, { windowsHide: true });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
+    const runFfmpeg = (args, label) => new Promise((res, rej) => {
+      let stderr = '';
+      const child = spawn(ffmpegPath, args, { windowsHide: true });
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.stdout.on('data', (chunk) => {
+        const text = chunk.toString();
+        const timeMatch = text.match(/out_time_us=(\d+)/);
+        if (timeMatch) {
+          const seconds = Number(timeMatch[1]) / 1000000;
+          logEmitter.emit('log', { time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level: 'info', message: `[录制] 转码进度(${label}): ${seconds.toFixed(0)} 秒` });
+        }
+      });
+      child.on('error', rej);
+      child.on('close', (code) => {
+        if (code === 0) res();
+        else rej(new Error(stderr.trim() || `ffmpeg 转码失败(${label})，退出码 ${code}`));
+      });
     });
-    child.stdout.on('data', (chunk) => {
-      const text = chunk.toString();
-      const timeMatch = text.match(/out_time_us=(\d+)/);
-      if (timeMatch) {
-        const seconds = Number(timeMatch[1]) / 1000000;
-        logEmitter.emit('log', { time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level: 'info', message: `[录制] 转码进度: ${seconds.toFixed(0)} 秒` });
-      }
-    });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) {
+
+    (async () => {
+      try {
+        await runFfmpeg(nvencArgs, 'NVENC');
         resolve();
-        return;
+      } catch (nvencErr) {
+        logEmitter.emit('log', { time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level: 'warn', message: `[录制] NVENC 失败，回退 CPU 编码: ${nvencErr.message}` });
+        try {
+          await runFfmpeg(cpuArgs, 'CPU');
+          resolve();
+        } catch (cpuErr) {
+          reject(cpuErr);
+        }
       }
-      reject(new Error(stderr.trim() || `ffmpeg 转码失败，退出码 ${code}`));
-    });
+    })();
   });
 }
 
