@@ -4961,12 +4961,17 @@ async function handlePushGlobalRssUpload(payload) {
     log(`[全局 RSS] 已同步到 juya: rss.xml + ${mdCount} 个 .md -> BACKUP/`, 'success');
 
     // 自动 git push 触发网站构建
-    exec(`cd "${juyaDir}" && git add -A && git commit -m "更新仓库推荐 [GitHub Scout]" && git push`, (err, stdout, stderr) => {
+    exec('git add -A && git commit -m "更新仓库推荐 [GitHub Scout]" && git push', { cwd: juyaDir }, (err, stdout, stderr) => {
       if (err) {
-        log(`[全局 RSS] git push 失败: ${stderr || err.message}`, 'warn');
+        const msg = (stderr || err.message || '').trim();
+        if (msg.includes('nothing to commit')) {
+          log('[全局 RSS] 内容无变化，跳过推送', 'info');
+          return;
+        }
+        log(`[全局 RSS] git push 失败: ${msg}`, 'warn');
         return;
       }
-      log(`[全局 RSS] 已推送，网站即将更新: https://2538514844.github.io/juya-ai-daily/`, 'success');
+      log('[全局 RSS] 已推送，网站即将更新: https://2538514844.github.io/juya-ai-daily/', 'success');
     });
   } catch (e) {
     log(`[全局 RSS] 同步 juya 失败: ${e.message}`, 'warn');
