@@ -4716,6 +4716,46 @@ function buildGlobalRssXml(rssConfig, repos, existingItems, maxItems) {
   return renderRss(meta, all.join('\n'));
 }
 
+function buildDailyArticleRssXml(rssConfig, articleContent, articleFilename, repos, dateStr) {
+  const feedUrl = computeRssPublicUrlFromConfig(rssConfig);
+  const meta = {
+    title: rssConfig.title || 'GitHub Scout 每日精选',
+    link: rssConfig.link || 'https://github.com',
+    description: rssConfig.description || 'AI 精选 GitHub 热门仓库，每日更新',
+    feedUrl,
+    buildDate: toRfc822Date(),
+    language: 'zh-CN',
+  };
+
+  const pageUrl = `https://2538514844.github.io/${dateStr}/`;
+  const repoCount = repos.length;
+  const repoNames = repos.map(r => r.name).slice(0, 10).join(', ');
+
+  // 使用 AI 文章作为 content:encoded，description 用摘要
+  const desc = `${dateStr} 每日精选 — ${repoCount} 个仓库: ${repoNames}${repos.length > 10 ? '...' : ''}`;
+
+  const itemXml = [
+    `<item>`,
+    `<title><![CDATA[${escapeXml(dateStr)} 每日精选]]></title>`,
+    `<link>${escapeXml(pageUrl)}</link>`,
+    `<description><![CDATA[${escapeCdata(desc)}]]></description>`,
+    `<content:encoded><![CDATA[${escapeCdata(articleContent)}]]></content:encoded>`,
+    `<guid isPermaLink="false">${escapeXml(pageUrl)}</guid>`,
+    `<pubDate>${meta.buildDate}</pubDate>`,
+    `</item>`,
+  ].join('\n');
+
+  return renderRss(meta, itemXml);
+}
+
+function escapeXml(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+function escapeCdata(s) {
+  return String(s || '').replace(/]]>/g, ']]]]><![CDATA[>');
+}
+
 function computeRssPublicUrl(account) {
   return computeRssPublicUrlFromConfig(account.rssConfig || {});
 }
@@ -4942,83 +4982,87 @@ async function handlePushGlobalRssUpload(payload) {
     log('[全局 RSS] 未生成 AI 介绍（请确认 AI 配置已设置且可用）', 'warn');
   }
 
-  // Build per-repo RSS XML (juya-style: one item per repo)
-  const resolvedRssConfig = { ...rssConfig, filePath };
-  const mergedExisting = fileMode === 'merge' ? existingItems : [];
-  const finalXml = buildGlobalRssXml(resolvedRssConfig, reposWithIntros, mergedExisting, rssConfig.maxItems || 200);
-  log(`[全局 RSS] ${reposWithIntros.length} 个仓库条目, XML ${finalXml.length} 字节`, 'info');
-  log(`[全局 RSS] 前 600 字符:\n${finalXml.slice(0, 600)}`, 'info');
-
   // 同步到 juya 项目本地目录
   try {
     const juyaDir = 'E:/Downloads/juya-ai-daily-master';
-    fs.writeFileSync(path.join(juyaDir, 'rss.xml'), finalXml, 'utf-8');
-
     const backupDir = path.join(juyaDir, 'BACKUP');
     if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir);
+    // 清除上次的旧文件，但保留 .gitkeep
     const oldFiles = fs.readdirSync(backupDir).filter(f => f.endsWith('.md'));
     for (const f of oldFiles) fs.unlinkSync(path.join(backupDir, f));
 
     const todayStr = new Date().toISOString().slice(0, 10);
 
-    // 先生成 AI 精选文章
+    // 1) 始终生成单仓库文件（作为备份和回落）
+    let mdCount = 0;
+    for (const repo of reposWithIntros) {
+      const name = repo.name || '';
+      const url = repo.url || `https://github.com/${name}`;
+      const desc = repo.rssIntro || repo.aiDescription || repo.description || '';
+      const stars = repo.stars || 0;
+      const forks = repo.forks || 0;
+      const lang = repo.language || '';
+      const tags = repo.aiTags || [];
+      const dateStr = (repo.created || repo.updated || '').slice(0, 10);
+
+      const stats = [`⭐ ${stars}`];
+      if (forks) stats.push(`🍴 ${forks}`);
+      if (lang && lang !== 'N/A') stats.push(lang);
+      if (dateStr) stats.push(dateStr);
+
+      const tagSpans = tags.filter(Boolean).map(t => '`' + t + '`').join(' ');
+
+      const md = [
+        `# [${name}](${url})`,
+        '',
+        stats.join(' | '),
+        '',
+        desc ? `> ${desc}` : '',
+        '',
+        tags.length ? '## 标签' : '',
+        '',
+        tagSpans || '',
+        '',
+        '---',
+        '',
+        `[查看仓库](${url})`,
+        '',
+      ].join('\n');
+
+      const idx = String(mdCount).padStart(4, '0');
+      fs.writeFileSync(path.join(backupDir, `${idx}_${todayStr}.md`), md, 'utf-8');
+      mdCount++;
+    }
+    log(`[全局 RSS] 已保存 ${mdCount} 个仓库文件`, 'info');
+
+    // 2) 尝试生成 AI 每日精选文章（存为 article_YYYY-MM-DD.md）
     let articleSaved = false;
     try {
       const articleResult = await handleGenerateDailyArticle({ repos: reposWithIntros });
       if (articleResult.ok) {
-        // 文章已由 handleGenerateDailyArticle 写入 BACKUP/
         articleSaved = true;
         log(`[全局 RSS] AI 文章已生成 (${articleResult.length} 字)`, 'success');
       } else {
-        log(`[全局 RSS] AI 文章生成失败: ${articleResult.message}，回退到单仓库列表`, 'warn');
+        log(`[全局 RSS] AI 文章生成失败: ${articleResult.message}，使用仓库列表`, 'warn');
       }
     } catch (e) {
-      log(`[全局 RSS] AI 文章异常: ${e.message}，回退到单仓库列表`, 'warn');
+      log(`[全局 RSS] AI 文章异常: ${e.message}，使用仓库列表`, 'warn');
     }
 
-    // AI 失败时回退：生成单仓库列表
-    if (!articleSaved) {
-      let mdCount = 0;
-      for (const repo of reposWithIntros) {
-        const name = repo.name || '';
-        const url = repo.url || `https://github.com/${name}`;
-        const desc = repo.rssIntro || repo.aiDescription || repo.description || '';
-        const stars = repo.stars || 0;
-        const forks = repo.forks || 0;
-        const lang = repo.language || '';
-        const tags = repo.aiTags || [];
-        const dateStr = (repo.created || repo.updated || '').slice(0, 10);
-
-        const stats = [`⭐ ${stars}`];
-        if (forks) stats.push(`🍴 ${forks}`);
-        if (lang && lang !== 'N/A') stats.push(lang);
-        if (dateStr) stats.push(dateStr);
-
-        const tagSpans = tags.filter(Boolean).map(t => '`' + t + '`').join(' ');
-
-        const md = [
-          `# [${name}](${url})`,
-          '',
-          stats.join(' | '),
-          '',
-          desc ? `> ${desc}` : '',
-          '',
-          tags.length ? '## 标签' : '',
-          '',
-          tagSpans || '',
-          '',
-          '---',
-          '',
-          `[查看仓库](${url})`,
-          '',
-        ].join('\n');
-
-        const idx = String(mdCount).padStart(4, '0');
-        fs.writeFileSync(path.join(backupDir, `${idx}_${todayStr}.md`), md, 'utf-8');
-        mdCount++;
-      }
-      log(`[全局 RSS] 已同步: rss.xml + ${mdCount} 个 .md`, 'success');
+    // 3) 构建 RSS：有文章时用一个每日条目，否则回退到逐仓库
+    const resolvedRssConfig = { ...rssConfig, filePath };
+    const mergedExisting = fileMode === 'merge' ? existingItems : [];
+    let finalXml;
+    if (articleSaved) {
+      finalXml = buildDailyArticleRssXml(resolvedRssConfig, articleResult.content, articleResult.filename, reposWithIntros, todayStr);
+      log(`[全局 RSS] 每日文章 RSS, XML ${finalXml.length} 字节`, 'info');
+    } else {
+      finalXml = buildGlobalRssXml(resolvedRssConfig, reposWithIntros, mergedExisting, rssConfig.maxItems || 200);
+      log(`[全局 RSS] ${reposWithIntros.length} 个仓库条目, XML ${finalXml.length} 字节`, 'info');
     }
+    log(`[全局 RSS] 前 600 字符:\n${finalXml.slice(0, 600)}`, 'info');
+    fs.writeFileSync(path.join(juyaDir, 'rss.xml'), finalXml, 'utf-8');
+    log(`[全局 RSS] 已同步: rss.xml + ${mdCount} 个 .md`, 'success');
 
     // git push
     const tryPush = (attempt) => {
@@ -5174,7 +5218,7 @@ async function handleGenerateDailyArticle(payload) {
     const backupDir = path.join(juyaDir, 'BACKUP');
     if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir);
 
-    const filename = `0000_${dateStr}.md`;
+    const filename = `article_${dateStr}.md`;
     const filepath = path.join(backupDir, filename);
     fs.writeFileSync(filepath, article, 'utf-8');
 
