@@ -5067,7 +5067,7 @@ async function handlePushGlobalRssUpload(payload) {
 
     // git push
     const tryPush = (attempt) => {
-      exec('git add -A && git commit -m "更新仓库推荐 [GitHub Scout]" && git push origin master', { cwd: juyaDir }, (err, stdout, stderr) => {
+      exec('git add -A && git commit -m "更新仓库推荐 [GitHub Scout]" && git push origin main', { cwd: juyaDir }, (err, stdout, stderr) => {
         if (err) {
           const msg = (stderr || err.message || '').trim();
           if (msg.includes('nothing to commit')) {
