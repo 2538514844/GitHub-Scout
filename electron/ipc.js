@@ -326,10 +326,14 @@ function getPromptRegistry() {
         '9. 不要输出代码块包裹的 Markdown，直接输出 Markdown 正文',
         '10. 不要输出任何前言、后记、免责声明或编辑署名',
         '',
+        '图片：',
+        '11. 每个项目数据中已提供 预览图 URL，在正文中合适位置用 `<img>` 嵌入',
+        '12. 图片格式：`<img src="预览图URL" alt="项目名" style="max-width:100%;border-radius:8px;">`',
+        '',
         '格式：',
-        '11. 全文使用 Markdown，h2 分隔项目，#数字 标注序号',
-        '12. 按 Stars 从高到低排列项目',
-        '13. Stars 超过 1000 的项目在引用块末尾标 🏆',
+        '13. 全文使用 Markdown，h2 分隔项目，#数字 标注序号',
+        '14. 按 Stars 从高到低排列项目',
+        '15. Stars 超过 1000 的项目在引用块末尾标 🏆',
       ].join('\n'),
       filePath: null,
     },
@@ -5196,7 +5200,7 @@ async function handleGenerateDailyArticle(payload) {
   // 按 Stars 排序
   const sorted = [...payload.repos].sort((a, b) => (b.stars || 0) - (a.stars || 0));
 
-  // 构建仓库数据列表（不包含旧描述，避免 AI 偷懒照抄）
+  // 构建仓库数据列表（不包含旧描述，避免 AI 偷懒照抄；包含预览图 URL 供文章内嵌）
   const repoLines = sorted.map((r) => {
     const name = r.name || '';
     const url = r.url || `https://github.com/${name}`;
@@ -5204,7 +5208,8 @@ async function handleGenerateDailyArticle(payload) {
     const forks = r.forks || 0;
     const tags = (r.aiTags || []).join(', ');
     const lang = r.language || '';
-    return `- ${name} | GitHub:${url} | Stars:${stars} | Forks:${forks} | ${lang} | 标签:${tags || '无'}`;
+    const ogImage = name.includes('/') ? `https://opengraph.githubassets.com/1/${name}` : '';
+    return `- ${name} | GitHub:${url} | Stars:${stars} | Forks:${forks} | ${lang} | 标签:${tags || '无'}${ogImage ? ` | 预览图:${ogImage}` : ''}`;
   }).join('\n');
 
   const today = new Date();
