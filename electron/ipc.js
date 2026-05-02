@@ -329,7 +329,7 @@ function getPromptRegistry() {
         '',
         '图片：',
         '11. 每个项目数据中已提供 预览图 URL，在正文中合适位置用 `<img>` 嵌入',
-        '12. 图片格式：`<img src="预览图URL" alt="项目名" style="max-width:100%;border-radius:8px;">`',
+        '12. 图片必须用 `<p>` 包裹：`<p><img src="预览图URL" alt="项目名" style="max-width:100%;border-radius:8px;"></p>`',
         '',
         '格式：',
         '13. 全文使用 Markdown，h2 分隔项目，#数字 标注序号',
@@ -4761,7 +4761,9 @@ function buildDailyArticleRssXml(rssConfig, articleContent, articleFilename, rep
   const repoNames = repos.map(r => r.name).slice(0, 10).join(', ');
 
   // Markdown → HTML，RSS 阅读器才能正确渲染加粗、链接等
-  const articleHtml = marked.parse(articleContent || '');
+  let articleHtml = marked.parse(articleContent || '');
+  // 裸 <img> 标签包进 <p>，部分 RSS 阅读器（如 Fluent Reader）对此敏感
+  articleHtml = articleHtml.replace(/(\n?)(<img\b[^>]*>)(\n?)/g, '$1<p>$2</p>$3');
   const desc = `${dateStr} 每日精选 — ${repoCount} 个仓库: ${repoNames}${repos.length > 10 ? '...' : ''}`;
 
   const itemXml = [
