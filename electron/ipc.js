@@ -4982,7 +4982,8 @@ async function handlePushGlobalRssUpload(payload) {
     log('[全局 RSS] 未生成 AI 介绍（请确认 AI 配置已设置且可用）', 'warn');
   }
 
-  // 同步到 juya 项目本地目录
+  // 构建 RSS + 同步到 juya 项目本地目录
+  let finalXml = '';
   try {
     const juyaDir = 'E:/Downloads/juya-ai-daily-master';
     const backupDir = path.join(juyaDir, 'BACKUP');
@@ -5037,8 +5038,9 @@ async function handlePushGlobalRssUpload(payload) {
 
     // 2) 尝试生成 AI 每日精选文章（存为 article_YYYY-MM-DD.md）
     let articleSaved = false;
+    let articleResult = null;
     try {
-      const articleResult = await handleGenerateDailyArticle({ repos: reposWithIntros });
+      articleResult = await handleGenerateDailyArticle({ repos: reposWithIntros });
       if (articleResult.ok) {
         articleSaved = true;
         log(`[全局 RSS] AI 文章已生成 (${articleResult.length} 字)`, 'success');
@@ -5052,8 +5054,7 @@ async function handlePushGlobalRssUpload(payload) {
     // 3) 构建 RSS：有文章时用一个每日条目，否则回退到逐仓库
     const resolvedRssConfig = { ...rssConfig, filePath };
     const mergedExisting = fileMode === 'merge' ? existingItems : [];
-    let finalXml;
-    if (articleSaved) {
+    if (articleSaved && articleResult) {
       finalXml = buildDailyArticleRssXml(resolvedRssConfig, articleResult.content, articleResult.filename, reposWithIntros, todayStr);
       log(`[全局 RSS] 每日文章 RSS, XML ${finalXml.length} 字节`, 'info');
     } else {
