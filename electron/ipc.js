@@ -5102,7 +5102,7 @@ async function handlePushGlobalRssUpload(payload) {
             log('[全局 RSS] 内容无变化，跳过推送', 'info');
             return;
           }
-          if (attempt < 3 && (msg.includes('Connection') || msg.includes('reset') || msg.includes('timeout') || msg.includes('fetch first') || msg.includes('rejected'))) {
+          if (attempt < 3 && (msg.includes('Connection') || msg.includes('connect') || msg.includes('unable to access') || msg.includes('reset') || msg.includes('timeout') || msg.includes('fetch first') || msg.includes('rejected'))) {
             log(`[全局 RSS] git push 重试 ${attempt}/3...`, 'info');
             setTimeout(() => tryPush(attempt + 1), 3000);
             return;
