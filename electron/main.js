@@ -121,7 +121,7 @@ function transcodeToMp4(sourcePath, targetPath) {
       '18',
       '-rc',
       'vbr_hq',
-      '-level',
+      '-level:v',
       'auto',
       '-maxrate',
       '24000k',
