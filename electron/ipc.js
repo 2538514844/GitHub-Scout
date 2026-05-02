@@ -4,6 +4,7 @@ const fs = require('fs');
 const { exec } = require('child_process');
 const { EventEmitter } = require('events');
 const { StringDecoder } = require('string_decoder');
+const { marked } = require('marked');
 const { injectLocalImageRuntimeStyle } = require('./local-image-runtime');
 const { synthesizeTtsToCache, loadPresentationConfig } = require('./presentation');
 
@@ -4759,7 +4760,8 @@ function buildDailyArticleRssXml(rssConfig, articleContent, articleFilename, rep
   const repoCount = repos.length;
   const repoNames = repos.map(r => r.name).slice(0, 10).join(', ');
 
-  // 使用 AI 文章作为 content:encoded，description 用摘要
+  // Markdown → HTML，RSS 阅读器才能正确渲染加粗、链接等
+  const articleHtml = marked.parse(articleContent || '');
   const desc = `${dateStr} 每日精选 — ${repoCount} 个仓库: ${repoNames}${repos.length > 10 ? '...' : ''}`;
 
   const itemXml = [
@@ -4767,7 +4769,7 @@ function buildDailyArticleRssXml(rssConfig, articleContent, articleFilename, rep
     `<title><![CDATA[${escapeXml(dateStr)} 每日精选]]></title>`,
     `<link>${escapeXml(pageUrl)}</link>`,
     `<description><![CDATA[${escapeCdata(desc)}]]></description>`,
-    `<content:encoded><![CDATA[${escapeCdata(articleContent)}]]></content:encoded>`,
+    `<content:encoded><![CDATA[${escapeCdata(articleHtml)}]]></content:encoded>`,
     `<guid isPermaLink="false">${escapeXml(pageUrl)}</guid>`,
     `<pubDate>${meta.buildDate}</pubDate>`,
     `</item>`,
