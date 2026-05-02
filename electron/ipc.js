@@ -5070,14 +5070,14 @@ async function handlePushGlobalRssUpload(payload) {
 
     // git push
     const tryPush = (attempt) => {
-      exec('git add -A && git commit -m "更新仓库推荐 [GitHub Scout]" && git push origin main', { cwd: juyaDir }, (err, stdout, stderr) => {
+      exec('git add -A && git commit -m "更新仓库推荐 [GitHub Scout]" && git pull --rebase origin main && git push origin main', { cwd: juyaDir }, (err, stdout, stderr) => {
         if (err) {
           const msg = (stderr || err.message || '').trim();
           if (msg.includes('nothing to commit')) {
             log('[全局 RSS] 内容无变化，跳过推送', 'info');
             return;
           }
-          if (attempt < 3 && (msg.includes('Connection') || msg.includes('reset') || msg.includes('timeout'))) {
+          if (attempt < 3 && (msg.includes('Connection') || msg.includes('reset') || msg.includes('timeout') || msg.includes('fetch first') || msg.includes('rejected'))) {
             log(`[全局 RSS] git push 重试 ${attempt}/3...`, 'info');
             setTimeout(() => tryPush(attempt + 1), 3000);
             return;
@@ -5085,7 +5085,7 @@ async function handlePushGlobalRssUpload(payload) {
           log(`[全局 RSS] git push 失败: ${msg}`, 'warn');
           return;
         }
-        log('[全局 RSS] 已推送，网站即将更新: https://2538514844.github.io/juya-ai-daily/', 'success');
+        log('[全局 RSS] 已推送，网站即将更新: https://2538514844.github.io/', 'success');
       });
     };
     tryPush(1);
