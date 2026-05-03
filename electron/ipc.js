@@ -41,6 +41,10 @@ function ensureLogFile() {
   const today = new Date().toISOString().slice(0, 10);
   if (currentLogDate === today) return;
   ensureDir(LOGS_DIR);
+  const logPath = getLogFilePath();
+  if (!fs.existsSync(logPath)) {
+    fs.writeFileSync(logPath, '﻿', 'utf8');
+  }
   currentLogDate = today;
 }
 
