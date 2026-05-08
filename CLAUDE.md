@@ -27,6 +27,8 @@ npm run electron:build
 - `electron-builder.json`: `appId: "com.github-scout.app"`, `productName: "GitHub Scout"`, Windows-only portable build (`win.target: ["portable"]`), no custom icon (`win.icon: null`). No macOS or Linux targets.
 - No test runner or linter is configured. If adding tests, use a lightweight setup consistent with React 19 + Vite.
 - `concurrently` and `antd` are listed in devDependencies but not imported anywhere.
+- **Utility scripts** in `scripts/`: `electron-dev.js` (dev orchestrator), `test-rss-upload.js` (RSS push testing), `publish-index.js` (RSS directory index generation), `publish-test-rss.js` (test RSS publishing workflow).
+- **`asarUnpack` duplication**: `package.json` has `build.asarUnpack` and `electron-builder.json` has `files[]` — both are evaluated by electron-builder. The `package.json` entry is the canonical one; make sure ffmpeg-static appears in at least one of them when modifying the build config.
 
 ## Project Architecture
 
@@ -36,6 +38,8 @@ npm run electron:build
 - **Vite 6** — bundler via `@vitejs/plugin-react`
 - **ffmpeg-static** — bundled ffmpeg binary for WebM→MP4 video transcoding (requires `asarUnpack` in electron-builder config)
 - **nodemailer** — SMTP email delivery for the push system
+- **marked** — Markdown-to-HTML renderer for AI analysis output display
+- **feed** — RSS 2.0 XML feed generation for the push system's RSS channel
 - **@electron/get** — listed in devDependencies, used internally by electron-builder
 
 ### Three-Layer Structure
@@ -48,7 +52,7 @@ npm run electron:build
 
 **2. Backend service layer** (`electron/ipc.js`, ~4570 lines)
 All backend logic lives here. Key modules when read top-to-bottom:
-- **Utility layer**: HTTP helpers (`httpsRequest`, `httpsGet`), JSON parsing, GitHub header builder. Both HTTP helpers now include `withNetworkRetry` (retries ECONNRESET/ETIMEDOUT/etc. up to 2 times with backoff) and set `rejectUnauthorized: false` for compatibility with certain network environments.
+- **Utility layer**: Two sets of HTTP helpers — `httpsRequest`/`httpsGet` (Node.js `https` module, used for GitHub and AI APIs) and `electronFetchText`/`electronFetchBuffer` (Electron's `net` module, follows system proxy settings, used for downloading external assets like fonts). Node.js helpers include `withNetworkRetry` (retries ECONNRESET/ETIMEDOUT/etc. up to 2 times with backoff) and set `rejectUnauthorized: false` for compatibility with certain network environments.
 - **AI parsing**: Structured output extraction from AI responses (`extractOpenAiCompatibleMessage`, `parseStructuredRepoTagMap`, `parseStructuredRepoTagMapFromJson`) with retry logic and model fallback (e.g. DeepSeek reasoner → chat for structured output)
 - **GitHub API**: Repo search (`fetchGitHub`, `handleFetchRepos`), README fetching (`fetchRepoReadme`, `handleFetchSelectedReadmes`), auth (device flow + PAT login)
 - **README carousel**: Full HTML slideshow generation pipeline. The AI system prompt template lives in `prompts/final_prompt.txt` (~900 lines). Pipeline: AI narration → TTS audio via MiniMax API → local image injection → carousel index building → video recording with screen capture (WebM) → ffmpeg transcode to MP4 (4K, x264 CRF 18, AAC 320k)
@@ -57,7 +61,7 @@ All backend logic lives here. Key modules when read top-to-bottom:
 - **Global SMTP**: `data/email-push-config.json` stores a top-level `smtp` object with host/port/user/pass/useTls shared across all push accounts. Old per-account SMTP fields are auto-migrated on first load. IPC channels: `push-global-smtp-load`, `push-global-smtp-save`, `push-global-smtp-test`.
 - **Global RSS**: `data/email-push-config.json` stores a top-level `rss` object with enabled/repo/branch/filePath/fileMode/commitMessage/title/description/link/publicUrl/maxItems. Old per-account RSS configs are auto-migrated on first load. IPC channels: `push-global-rss-load`, `push-global-rss-save`, `push-global-rss-upload`. Global RSS upload pushes repos to the configured GitHub repo via Contents API. Supports two `fileMode`s: **dated** (each upload creates a separate `{date}.xml` file, auto-generates an `index.html` directory page) and **merge** (consolidates items into one file, capped at `maxItems`). Both modes deduplicate by guid when merging with existing RSS content.
 - **Prompt overrides**: `resolvePrompt(key, default)` checks `data/prompts.json` for user overrides before falling back to hardcoded defaults. All 18 prompt registry entries use this. Template prompts store literal `${var}` placeholders substituted via `.replace()` at runtime. `prompts.json` and `prompts-history.json` are created on first save via the Prompt Editor UI; they do not exist in a fresh clone. Each save appends a version history entry in `prompts-history.json`, supporting per-prompt rollback.
-- **Data persistence**: JSON files in `data/` — `settings.json` (AI config), `auth.json` (GitHub token), `repo_analysis.json` (analysis history), `email-push-config.json` (SMTP accounts, recipients, crawl settings), `prompts.json` (AI prompt overrides, created on first save), `prompts-history.json` (version history per prompt key, created on first save), `presentation-settings.json` (TTS config + playlist), `logs/` (daily log files: `app-YYYY-MM-DD.log`), `tts-cache/` (cached TTS audio), `readme-carousel-runs/` (generated carousel HTML sessions), `fonts/` (single `htmlFont.ttf` base64 font for offline carousel rendering, also at `src/assets/htmlFont.ttf`)
+- **Data persistence**: JSON files in `data/` — `settings.json` (AI config), `auth.json` (GitHub token), `repo_analysis.json` (analysis history), `email-push-config.json` (SMTP accounts, recipients, crawl settings), `prompts.json` (AI prompt overrides, created on first save), `prompts-history.json` (version history per prompt key, created on first save), `presentation-settings.json` (TTS config + playlist), `logs/` (daily log files: `app-YYYY-MM-DD.log`), `tts-cache/` (cached TTS audio), `readme-carousel-runs/` (generated carousel HTML sessions), `fonts/` (`htmlFont.ttf` and `material-icons.woff2` cached base64 fonts for offline carousel rendering; ttf also at `src/assets/htmlFont.ttf`)
 - **Atomic writes**: JSON save functions in `ipc.js` and `presentation.js` use tmp-file + backup + rename to avoid corruption on write failure.
 - **Video transcode**: `main.js` includes a WebM→MP4 ffmpeg pipeline using `ffmpeg-static`. `electron-builder.json` has `asarUnpack` for `node_modules/ffmpeg-static/**/*` — ffmpeg can't run from within an asar archive
 
@@ -78,8 +82,8 @@ All backend logic lives here. Key modules when read top-to-bottom:
 
 | Component | Purpose |
 |---|---|
-| `App.jsx` | Main orchestrator — state for repos, analysis, AI config, auth, logs, sidebar navigation. Uses `activeSidebarTab` (null/'config'/'email-push'/'smtp'/'rss'/'prompts'/'presentation'/'repo-history') instead of individual toggle booleans. |
-| `Sidebar.jsx` | Left sidebar with nav items (AI配置/个人推送/SMTP设置/RSS设置/固定播放器/历史仓库/提示词). Only one panel active at a time. |
+| `App.jsx` | Main orchestrator — state for repos, analysis, AI config, auth, logs, sidebar navigation. Uses `activeSidebarTab` (null/'config'/'email-push'/'smtp'/'rss'/'prompts'/'presentation'/'repo-history'/'font-cache'/'render-test') instead of individual toggle booleans. |
+| `Sidebar.jsx` | Left sidebar with nav items (AI配置/个人推送/SMTP设置/RSS设置/固定播放器/历史仓库/提示词/字体缓存/渲染测试). Only one panel active at a time. |
 | `ConfigPanel.jsx` | AI provider configuration (base URL, API key, model) with presets for OpenAI, Claude, SiliconFlow, DeepSeek, Zhipu, Ollama, Custom. Includes connection test button. |
 | `RepoTable.jsx` | Displays fetched repos in a table with selection, CSV export |
 | `RepoImagePanel.jsx` | Local image picker/manager per repo |
@@ -94,6 +98,8 @@ All backend logic lives here. Key modules when read top-to-bottom:
 | `EmailPushEditor.jsx` | Full-screen overlay for reviewing/editing crawled repos before output — checkbox selection, inline editing, "发送邮件" to SMTP recipients, "全局 RSS" to push to global RSS feed |
 | `PromptEditorPanel.jsx` | Visual editor for all AI prompt templates — browse by category, search, edit with monospace textarea, save/reset per prompt |
 | `RepoHistoryPanel.jsx` | Searchable history of all crawled repos from `data/repo_analysis.json`. Shows tags as chips, stars/forks, and a "车播" badge if the repo was used in a README carousel. Supports pagination via `load-repo-history` IPC. |
+| `FontCachePanel.jsx` | Font cache management — shows Material Icons cache status, one-click download button. Downloads woff2 from Google Fonts once, then all carousel HTML pages use locally injected base64 font (no CDN dependency). Uses IPC: `check-font-cache`, `download-font-cache`. |
+| `RenderTestPanel.jsx` | Render pipeline test — auto-runs NVENC/CPU encode test on mount. Shows ffmpeg availability, NVENC encoder detection, and comparative encode benchmarks. Uses IPC: `test-render`. |
 | `hooks/useUiSwitchSound.js` | Custom hook managing an Audio element pool for UI switch sounds |
 
 ### IPC Bridge
@@ -121,7 +127,8 @@ All backend logic lives here. Key modules when read top-to-bottom:
 | Channel | Direction | Purpose |
 |---|---|---|
 | `push-global-rss-load` / `push-global-rss-save` | renderer ↔ main | Global RSS config (enabled/repo/branch/filePath/commitMessage/title/description/link/publicUrl) |
-| `push-global-rss-upload` | renderer → main | Upload RSS XML to global repo (with AI intros). Dated mode: new file per upload + auto-regenerate `index.html` directory. Merge mode: consolidate into single file, dedup by guid |
+| `push-global-rss-upload` | renderer → main | Upload RSS XML to global repo (with AI intros). Dated mode: new file per upload + auto-regenerate `index.html` directory. Merge mode: consolidate into single file, dedup by guid. Also auto-generates a daily markdown article and JSON backup alongside the RSS XML. |
+| `generate-daily-article` | renderer → main | Generate an AI-written structured markdown article from repos (sorted by stars), saved to a local backup path. Auto-triggered during global RSS upload but also callable standalone. |
 
 **Email & RSS push**
 | Channel | Direction | Purpose |
@@ -168,6 +175,7 @@ All backend logic lives here. Key modules when read top-to-bottom:
 | `load-latest-carousel-manifest` | renderer → main | Load the most recent carousel manifest as a playlist JSON |
 | Window controls | renderer → main | `minimize`, `maximize`, `close` (frameless window) |
 | `close-current-window` | renderer → main | Close the calling BrowserWindow |
+| `test-render` | renderer → main | Run NVENC/CPU encode pipeline test. Generates a 2s 4K test source, encodes with NVENC then CPU, reports availability/success/timing |
 
 ### Data Flow (primary path)
 1. User sets search filters + AI config in UI
@@ -199,6 +207,14 @@ All backend logic lives here. Key modules when read top-to-bottom:
 - Font system: `index.html` preconnects to Google Fonts. Carousel HTML uses base64-injected `htmlFont.ttf` from `data/fonts/` (also at `src/assets/htmlFont.ttf`) for offline rendering — CSS font stack: `'Google Sans', 'Roboto', 'Noto Sans SC', 'htmlFont', system-ui, -apple-system, sans-serif`
 - Page turn sound: the carousel plays `mixkit-fast-double-click-on-mouse-275.wav` from the project root on slide transitions
 - Recorder data flow: `MediaRecorder` API in `recorder-preload.cjs` captures screen as WebM → `save-recorded-video` handler in `main.js` transcodes to MP4 via `ffmpeg-static` (4K, x264 CRF 18, AAC 320k). The `asarUnpack` in `electron-builder.json` is required because ffmpeg can't run from within an asar archive
+- **NVENC `-level:v auto` is mandatory**: 4K (3840×2160) encoding requires H.264 Level 5.1+. Without `-level:v auto`, NVENC may default to a lower level and fail with "Invalid Level", causing silent fallback to CPU. Do NOT remove `-level:v auto` from `nvencArgs` in `transcodeToMp4`. The render test panel (`test-render` IPC) validates this.
+
+**Font cache & offline icons**
+- On first carousel generation, `ensureMaterialIconsFont()` downloads the Material Icons woff2 from Google Fonts (via `electronFetchText`/`electronFetchBuffer` for proxy awareness) and caches it at `data/fonts/material-icons.woff2`. Subsequent runs skip the download.
+- `injectFontIntoHtml()` injects base64 `@font-face` declarations for `htmlFont` (ttf), `Material Icons`, and `Material Symbols Rounded` (both mapping to the same cached woff2). This makes generated carousel HTML fully offline — no CDN dependency for fonts or icons.
+- When icon font isn't cached, an "icon guard" script is injected to hide icons until the CDN font loads, preventing flash-of-missing-icons.
+- The `FontCachePanel.jsx` component exposes a UI to check cache status and trigger download manually via `check-font-cache`/`download-font-cache` IPC.
+- **Icon migration**: Generated HTML (carousel pages, briefing cards, email body) uses `material-icons` (classic, non-variable) instead of `material-symbols-rounded`. Both font family names are registered from the same woff2 in the base64 injection so AI-generated pages using either name will render. The React renderer always uses `material-icons` — never `material-symbols-rounded` in JSX.
 
 **RSS & Email Push**
 - SMTP and RSS settings are **global** (top-level `smtp` and `rss` objects in `email-push-config.json`), not per-account. Old per-account SMTP/RSS fields are auto-migrated to the top level on first load. Each account in `accounts[]` stores only name, recipients, and crawlConfig.
@@ -208,7 +224,7 @@ All backend logic lives here. Key modules when read top-to-bottom:
 - The frameless window has custom title bar controls exposed via IPC (`minimize`/`maximize`/`close`). Recorder windows also expose `close-current-window`
 - Sound effects use an Audio element pool (3 instances) with throttling (min interval per variant)
 - Sidebar navigation: `App.jsx` uses a single `activeSidebarTab` state instead of individual `showConfig`/`showEmailPush`/`showPromptEditor` booleans. `Sidebar.jsx` renders the nav + content slot. Clicking a nav item toggles the panel; clicking the active item closes the sidebar. Header has a single "侧栏" hamburger button replacing the old AI配置/个人推送/提示词 individual toggles.
-- **Icons**: In React components, always use Google Material Icons (classic `material-icons` font) — do NOT use `material-symbols-rounded` in JSX. The font is preloaded in `index.html` via `<link href="https://fonts.googleapis.com/icon?family=Material+Icons">`. Usage: `<span className="material-icons" style={{ fontSize: 14 }}>icon_name</span>`. Variable fonts (Material Symbols) require `font-variation-settings` that won't work without extra CSS in the React renderer. However, **backend-generated HTML** (email body in `ipc.js`, carousel pages) uses `material-symbols-rounded` via its own `<link>` — that is acceptable since those are standalone HTML documents, not React components. For new static HTML (email body, RSS), include the appropriate Google Fonts link in `<head>`. Current icon mapping in the project:
+- **Icons**: In React components, always use Google Material Icons (classic `material-icons` font) — do NOT use `material-symbols-rounded` in JSX. The font is preloaded in `index.html` via `<link href="https://fonts.googleapis.com/icon?family=Material+Icons">`. Usage: `<span className="material-icons" style={{ fontSize: 14 }}>icon_name</span>`. Variable fonts (Material Symbols) require `font-variation-settings` that won't work without extra CSS in the React renderer. Backend-generated HTML (email body, carousel pages, briefing cards) also uses `material-icons` (classic) by convention. The base64 font injection registers `Material Symbols Rounded` as an alias for backward compatibility with AI-generated pages. For new static HTML, use `<link href="https://fonts.googleapis.com/icon?family=Material+Icons&display=block" rel="stylesheet">`. Current icon mapping in the project:
 
 | Context | Icon Name | Meaning |
 |---|---|---|
@@ -219,5 +235,7 @@ All backend logic lives here. Key modules when read top-to-bottom:
 | Sidebar | `edit_note` | 提示词 |
 | Sidebar | `slideshow` | 固定播放器 |
 | Sidebar | `history` | 历史仓库 |
+| Sidebar | `font_download` | 字体缓存 |
+| Sidebar | `videocam` | 渲染测试 |
 | Data labels | `star` | Stars |
 | Data labels | `call_split` | Forks (git branch icon) |

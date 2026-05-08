@@ -21,7 +21,7 @@
 * 每个要点输出三个元素：
   * 小标题：建议 `2-6` 个汉字。
   * 简述：建议 `20-50` 字，忠于原文。
-  * 图标：Google Material Symbols 图标名（`snake_case`）。
+  * 图标：Google Material Icons 图标名（`snake_case`）。
 
 2. 结构生成
 * 输出完整 HTML5 文档。
@@ -211,7 +211,7 @@
 * 卡片头（`div.title-box`）
 * `flex items-center gap-2 mb-0 px-5 pt-5 pb-2`
 
-* 图标（`span.js-icon.material-symbols-rounded`）
+* 图标（`span.js-icon.material-icons`）
 * 图标名直接作为文本内容，如：`insights`、`memory`、`gavel`。
 
 * 卡片小标题（`h3.card-title`）
@@ -259,7 +259,7 @@ const themes = [
 **[1] Required CDNs（放入 `<head>`）**
 ```html
 <script src="https://cdn.tailwindcss.com"></script>
-<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,300,0,0&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/icon?family=Material+Icons&display=block" rel="stylesheet" />
 ```
 
 **[1.5] 本地字体（放入 `<head>` 的 `<style>` 最前面）**
@@ -303,17 +303,22 @@ body {
   text-shadow: 2px 2px 0 rgba(201, 100, 66, 0.1);
 }
 
-.material-symbols-rounded {
-  font-family: 'Material Symbols Rounded' !important;
-  font-weight: 300 !important;
+.material-icons {
+  font-family: 'Material Icons';
+  font-weight: normal;
   font-style: normal;
+  font-size: inherit;
   display: inline-block;
   line-height: 1;
   text-transform: none;
   letter-spacing: normal;
+  word-wrap: normal;
   white-space: nowrap;
   direction: ltr;
-  font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24 !important;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'liga';
 }
 
 .card-item {

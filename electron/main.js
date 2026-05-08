@@ -33,6 +33,11 @@ const {
   handleLoadGlobalRss,
   handleSaveGlobalRss,
   handleGenerateDailyArticle,
+  handleCheckFontCache,
+  handleDownloadFontCache,
+  handleTestRender,
+  NVENC_ENCODE_ARGS,
+  CPU_ENCODE_ARGS,
   handleLoadAllPrompts,
   handleSavePrompt,
   handleResetPrompt,
@@ -99,76 +104,18 @@ function transcodeToMp4(sourcePath, targetPath) {
       return;
     }
 
-    // 优先 NVENC 硬件加速，失败时回退 CPU 软编码
+    // Args built from shared constants (single source of truth with render test)
     const nvencArgs = [
-      '-y',
-      '-hide_banner',
-      '-loglevel',
-      'error',
-      '-progress',
-      'pipe:1',
-      '-i',
-      sourcePath,
-      '-map',
-      '0:v:0',
-      '-map',
-      '0:a?',
-      '-c:v',
-      'h264_nvenc',
-      '-preset',
-      'p4',
-      '-rc',
-      'constqp',
-      '-qp',
-      '18',
-      '-g',
-      '60',
-      '-vf',
-      'scale=3840:2160:force_original_aspect_ratio=decrease,pad=3840:2160:(ow-iw)/2:(oh-ih)/2',
-      '-c:a',
-      'aac',
-      '-b:a',
-      '320k',
-      '-movflags',
-      '+faststart',
+      '-y', '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:1',
+      '-i', sourcePath,
+      ...NVENC_ENCODE_ARGS,
       targetPath,
     ];
 
     const cpuArgs = [
-      '-y',
-      '-hide_banner',
-      '-loglevel',
-      'error',
-      '-progress',
-      'pipe:1',
-      '-i',
-      sourcePath,
-      '-map',
-      '0:v:0',
-      '-map',
-      '0:a?',
-      '-c:v',
-      'libx264',
-      '-pix_fmt',
-      'yuv420p',
-      '-preset',
-      'medium',
-      '-crf',
-      '18',
-      '-maxrate',
-      '24000k',
-      '-bufsize',
-      '48000k',
-      '-g',
-      '60',
-      '-vf',
-      'scale=3840:2160:force_original_aspect_ratio=decrease,pad=3840:2160:(ow-iw)/2:(oh-ih)/2',
-      '-c:a',
-      'aac',
-      '-b:a',
-      '320k',
-      '-movflags',
-      '+faststart',
+      '-y', '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:1',
+      '-i', sourcePath,
+      ...CPU_ENCODE_ARGS,
       targetPath,
     ];
 
@@ -549,6 +496,13 @@ app.whenReady().then(() => {
   ipcMain.handle('reset-prompt', (_, key) => handleResetPrompt(key));
   ipcMain.handle('get-prompt-history', (_, key) => handleGetPromptHistory(key));
   ipcMain.handle('rollback-prompt', (_, key, versionIndex) => handleRollbackPrompt(key, versionIndex));
+
+  // Font cache
+  ipcMain.handle('check-font-cache', () => handleCheckFontCache());
+  ipcMain.handle('download-font-cache', () => handleDownloadFontCache());
+
+  // Render test
+  ipcMain.handle('test-render', () => handleTestRender());
 
   logEmitter.on('log', (entry) => {
     if (mainWindow && !mainWindow.isDestroyed()) {

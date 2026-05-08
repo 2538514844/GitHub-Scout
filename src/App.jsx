@@ -11,6 +11,8 @@ import GlobalSmtpSettings from './components/GlobalSmtpSettings';
 import GlobalRssSettings from './components/GlobalRssSettings';
 import PresentationStudio from './components/PresentationStudio';
 import RepoHistoryPanel from './components/RepoHistoryPanel';
+import FontCachePanel from './components/FontCachePanel';
+import RenderTestPanel from './components/RenderTestPanel';
 import Sidebar from './components/Sidebar';
 import useUiSwitchSound from './hooks/useUiSwitchSound';
 
@@ -981,6 +983,12 @@ function App() {
             )}
             {activeSidebarTab === 'prompts' && (
               <PromptEditorPanel />
+            )}
+            {activeSidebarTab === 'font-cache' && (
+              <FontCachePanel />
+            )}
+            {activeSidebarTab === 'render-test' && (
+              <RenderTestPanel />
             )}
           </Sidebar>
         )}

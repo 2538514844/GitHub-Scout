@@ -7,6 +7,8 @@ export default function Sidebar({ activeTab, onTabChange, accountsCount = 0, chi
     { key: 'presentation', label: '固定播放器', icon: 'slideshow' },
     { key: 'repo-history', label: '历史仓库', icon: 'history' },
     { key: 'prompts', label: '提示词', icon: 'edit_note' },
+    { key: 'font-cache', label: '字体缓存', icon: 'font_download' },
+    { key: 'render-test', label: '渲染测试', icon: 'videocam' },
   ];
 
   return (

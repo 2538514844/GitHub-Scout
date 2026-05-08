@@ -1,12 +1,20 @@
 const https = require('https');
 const path = require('path');
 const fs = require('fs');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const { StringDecoder } = require('string_decoder');
 const { marked } = require('marked');
+const { net } = require('electron');
 const { injectLocalImageRuntimeStyle } = require('./local-image-runtime');
 const { synthesizeTtsToCache, loadPresentationConfig } = require('./presentation');
+
+let ffmpegStaticPath = '';
+try {
+  ffmpegStaticPath = require('ffmpeg-static') || '';
+} catch {
+  ffmpegStaticPath = '';
+}
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
@@ -18,6 +26,8 @@ const PAGE_TURN_SOUND_FILE_NAME = 'mixkit-fast-double-click-on-mouse-275.wav';
 const PAGE_TURN_SOUND_SOURCE_PATH = path.join(__dirname, '..', PAGE_TURN_SOUND_FILE_NAME);
 const HTML_FONT_FILE_NAME = 'htmlFont.ttf';
 const HTML_FONT_SOURCE_PATH = path.join(DATA_DIR, 'fonts', HTML_FONT_FILE_NAME);
+const MATERIAL_ICONS_FILE_NAME = 'material-icons.woff2';
+const MATERIAL_ICONS_SOURCE_PATH = path.join(DATA_DIR, 'fonts', MATERIAL_ICONS_FILE_NAME);
 const SOURCE_APP_FONT_STACK = "'Google Sans', 'Roboto', 'Noto Sans SC', 'htmlFont', system-ui, -apple-system, sans-serif";
 const SOURCE_APP_FONT_LINKS = `
   <link id="repo-google-fonts-preconnect" rel="preconnect" href="https://fonts.googleapis.com" />
@@ -25,6 +35,32 @@ const SOURCE_APP_FONT_LINKS = `
   <link id="repo-google-fonts-stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@300;400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet" />`;
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+function resolveFfmpegPath() {
+  if (!ffmpegStaticPath) return '';
+  const unpackedPath = ffmpegStaticPath.replace('app.asar', 'app.asar.unpacked');
+  return [ffmpegStaticPath, unpackedPath].find((candidate) => candidate && fs.existsSync(candidate)) || '';
+}
+
+// Shared encode args — single source of truth for both test and production transcode
+const ENCODE_VF = 'scale=3840:2160:force_original_aspect_ratio=decrease,pad=3840:2160:(ow-iw)/2:(oh-ih)/2';
+
+const NVENC_ENCODE_ARGS = [
+  '-map', '0:v:0', '-map', '0:a?',
+  '-c:v', 'h264_nvenc', '-preset', 'p4', '-level:v', '5.2',
+  '-rc', 'constqp', '-qp', '18', '-g', '60',
+  '-vf', ENCODE_VF,
+  '-c:a', 'aac', '-b:a', '320k', '-movflags', '+faststart',
+];
+
+const CPU_ENCODE_ARGS = [
+  '-map', '0:v:0', '-map', '0:a?',
+  '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium',
+  '-crf', '18', '-maxrate', '24000k', '-bufsize', '48000k', '-g', '60',
+  '-vf', ENCODE_VF,
+  '-c:a', 'aac', '-b:a', '320k', '-movflags', '+faststart',
+];
+
 if (!fs.existsSync(README_CAROUSEL_RUNS_DIR)) fs.mkdirSync(README_CAROUSEL_RUNS_DIR, { recursive: true });
 
 const logEmitter = new EventEmitter();
@@ -1222,9 +1258,78 @@ function getFontBase64() {
   return cachedFontBase64;
 }
 
+// Material Icons font (classic, non-variable) — injected as base64 so icons work offline.
+// Downloaded once from Google Fonts and cached at data/fonts/material-icons.woff2.
+let cachedMaterialIconsBase64 = null;
+
+function getMaterialIconsBase64() {
+  if (cachedMaterialIconsBase64) {
+    return cachedMaterialIconsBase64;
+  }
+  if (!fs.existsSync(MATERIAL_ICONS_SOURCE_PATH)) {
+    return '';
+  }
+  cachedMaterialIconsBase64 = fs.readFileSync(MATERIAL_ICONS_SOURCE_PATH).toString('base64');
+  return cachedMaterialIconsBase64;
+}
+
+// Fetch text via Electron net (follows system proxy settings)
+async function electronFetchText(url) {
+  const res = await net.fetch(url);
+  if (!res.ok) return { statusCode: res.status, data: '' };
+  const text = await res.text();
+  return { statusCode: res.status, data: text };
+}
+
+// Fetch binary via Electron net (follows system proxy settings)
+async function electronFetchBuffer(url) {
+  const res = await net.fetch(url);
+  if (!res.ok) return { statusCode: res.status, data: Buffer.alloc(0) };
+  const ab = await res.arrayBuffer();
+  return { statusCode: res.status, data: Buffer.from(ab) };
+}
+
+async function ensureMaterialIconsFont() {
+  if (fs.existsSync(MATERIAL_ICONS_SOURCE_PATH)) return;
+
+  const fontsDir = path.join(DATA_DIR, 'fonts');
+  if (!fs.existsSync(fontsDir)) fs.mkdirSync(fontsDir, { recursive: true });
+
+  try {
+    // Fetch Material Icons CSS from Google Fonts to get the woff2 URL
+    log('[字体] 开始下载 Material Icons 字体...', 'info');
+    const cssRes = await electronFetchText('https://fonts.googleapis.com/icon?family=Material+Icons');
+    if (cssRes.statusCode !== 200) {
+      log(`[字体] Material Icons CSS 获取失败 HTTP ${cssRes.statusCode}`, 'warn');
+      return;
+    }
+    const woff2Match = cssRes.data.match(/url\((https:\/\/[^)]+\.woff2)\)/);
+    if (!woff2Match) {
+      log('[字体] 未找到 Material Icons woff2 URL', 'warn');
+      return;
+    }
+
+    // Download the woff2 font file (binary, via Electron net for proxy support)
+    const fontRes = await electronFetchBuffer(woff2Match[1]);
+    if (fontRes.statusCode !== 200) {
+      log(`[字体] Material Icons 下载失败 HTTP ${fontRes.statusCode}`, 'warn');
+      return;
+    }
+
+    fs.writeFileSync(MATERIAL_ICONS_SOURCE_PATH, fontRes.data);
+    cachedMaterialIconsBase64 = null; // reset cache so next read picks up the new file
+    log('[字体] Material Icons 字体已缓存到本地，图标将离线可用', 'success');
+  } catch (e) {
+    log(`[字体] Material Icons 字体下载失败: ${e.message}`, 'warn');
+    // Non-fatal: icons will fall back to Google CDN link
+  }
+}
+
 function injectFontIntoHtml(htmlContent) {
   const fontBase64 = getFontBase64();
-  if (!fontBase64) {
+  const iconFontBase64 = getMaterialIconsBase64();
+
+  if (!fontBase64 && !iconFontBase64) {
     return htmlContent;
   }
 
@@ -1233,33 +1338,78 @@ function injectFontIntoHtml(htmlContent) {
     return html;
   }
 
-  const styleTag = `${SOURCE_APP_FONT_LINKS}
-<style id="repo-custom-font-style">
+  let blocks = '';
+  if (fontBase64) {
+    blocks += `
   @font-face {
     font-family: 'htmlFont';
     src: url(data:font/ttf;base64,${fontBase64}) format('truetype');
+  }`;
   }
+  if (iconFontBase64) {
+    blocks += `
+  @font-face {
+    font-family: 'Material Icons';
+    src: url(data:font/woff2;base64,${iconFontBase64}) format('woff2');
+    font-weight: normal;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
+    font-family: 'Material Symbols Rounded';
+    src: url(data:font/woff2;base64,${iconFontBase64}) format('woff2');
+    font-weight: normal;
+    font-style: normal;
+    font-display: block;
+  }`;
+  }
+
+  const iconGuard = (!iconFontBase64) ? `
+  <script>
+  (function(){
+    var els = document.querySelectorAll('.material-icons,.material-symbols-rounded,.js-icon');
+    if(!els.length)return;
+    els.forEach(function(e){e.style.visibility='hidden'});
+    function show(){els.forEach(function(e){e.style.visibility=''})}
+    if(document.fonts&&document.fonts.ready){
+      document.fonts.ready.then(function(){
+        if(document.fonts.check('16px Material Icons')||document.fonts.check('16px Material Symbols Rounded')){
+          show();
+        }
+      }).catch(function(){});
+    }
+  })();
+  </script>` : '';
+
+  const fontStackCSS = fontBase64 ? `
   body {
     font-family: ${SOURCE_APP_FONT_STACK} !important;
   }
   .main-container {
     font-family: ${SOURCE_APP_FONT_STACK} !important;
-  }
+  }` : '';
+
+  const headAdditions = `${SOURCE_APP_FONT_LINKS}${iconGuard}
+<style id="repo-custom-font-style">${blocks}${fontStackCSS}
 </style>`;
 
-  const cleaned = html
+  let cleaned = html
     .replace(/\s*<style[^>]+id=["']repo-custom-font-style["'][\s\S]*?<\/style>/ig, '')
     .replace(/\s*<link[^>]+id=["']repo-google-fonts-(?:preconnect|gstatic-preconnect|stylesheet)["'][^>]*>/ig, '');
 
+  if (iconFontBase64) {
+    cleaned = cleaned.replace(/\s*<link[^>]+href=["']https:\/\/fonts\.googleapis\.com\/(css2\?family=Material\+Symbols|icon\?family=Material\+Icons)[^"']*["'][^>]*>/ig, '');
+  }
+
   if (/<\/head>/i.test(cleaned)) {
-    return cleaned.replace(/<\/head>/i, `${styleTag}\n</head>`);
+    return cleaned.replace(/<\/head>/i, `${headAdditions}\n</head>`);
   }
 
   if (/<head[^>]*>/i.test(cleaned)) {
-    return cleaned.replace(/<head([^>]*)>/i, `<head$1>\n${styleTag}`);
+    return cleaned.replace(/<head([^>]*)>/i, `<head$1>\n${headAdditions}`);
   }
 
-  return `<!DOCTYPE html><html><head>${styleTag}</head><body>${cleaned}</body></html>`;
+  return `<!DOCTYPE html><html><head>${headAdditions}</head><body>${cleaned}</body></html>`;
 }
 
 function injectLocalImageManifestIntoHtml(htmlContent, images, audioDurationMs = null) {
@@ -1401,7 +1551,7 @@ function buildBriefingNarrationCardHtml({
   <title>${escapeHtml(title)}</title>
   <script src="https://cdn.tailwindcss.com"></script>
 ${SOURCE_APP_FONT_LINKS}
-  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,300,0,0&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons&display=block" rel="stylesheet" />
   <style>
     @font-face {
       font-family: 'htmlFont';
@@ -1437,9 +1587,28 @@ ${SOURCE_APP_FONT_LINKS}
       text-shadow: 2px 2px 0 rgba(201, 100, 66, 0.1);
     }
 
+    .material-icons {
+      font-family: 'Material Icons';
+      font-weight: normal;
+      font-style: normal;
+      font-size: inherit;
+      display: inline-block;
+      line-height: 1;
+      text-transform: none;
+      letter-spacing: normal;
+      word-wrap: normal;
+      white-space: nowrap;
+      direction: ltr;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      -moz-osx-font-smoothing: grayscale;
+      font-feature-settings: 'liga';
+    }
+    /* Keep material-symbols-rounded rule so AI-generated pages still work
+       (base64-injected font is aliased to both family names). */
     .material-symbols-rounded {
-      font-family: 'Material Symbols Rounded' !important;
-      font-weight: 300 !important;
+      font-family: 'Material Symbols Rounded';
+      font-weight: normal;
       font-style: normal;
       display: inline-block;
       line-height: 1;
@@ -1447,7 +1616,6 @@ ${SOURCE_APP_FONT_LINKS}
       letter-spacing: normal;
       white-space: nowrap;
       direction: ltr;
-      font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24 !important;
     }
 
     .card-item {
@@ -1507,7 +1675,7 @@ ${SOURCE_APP_FONT_LINKS}
         <div id="card-dynamic-container" class="flex flex-wrap justify-center w-full" style="gap: 24px; --container-gap: 24px;">
           <div class="card-item card-width-2col flex flex-col" style="padding: 8px; background-color: #ffffff; border-radius: 32px; border: 1px solid rgb(218, 216, 212); box-shadow: 0 10px 30px -10px rgba(74, 64, 58, 0.1);">
             <div class="title-box flex items-center gap-2 mb-0 px-5 pt-5 pb-2">
-              <span class="js-icon material-symbols-rounded" style="font-size: 64px; color: #c96442;">calendar_month</span>
+              <span class="js-icon material-icons" style="font-size: 64px; color: #c96442;">calendar_month</span>
               <h3 class="card-title font-bold leading-tight text-4-5xl" style="color: #c96442;">${escapeHtml(kicker)}</h3>
             </div>
             <div class="card-body flex-1 w-full px-5 pb-5 pt-0" style="min-height: 80px;">
@@ -1516,7 +1684,7 @@ ${SOURCE_APP_FONT_LINKS}
           </div>
           <div class="card-item card-width-2col flex flex-col" style="padding: 8px; background-color: #ffffff; border-radius: 32px; border: 1px solid rgb(218, 216, 212); box-shadow: 0 10px 30px -10px rgba(74, 64, 58, 0.1);">
             <div class="title-box flex items-center gap-2 mb-0 px-5 pt-5 pb-2">
-              <span class="js-icon material-symbols-rounded" style="font-size: 64px; color: #335c67;">campaign</span>
+              <span class="js-icon material-icons" style="font-size: 64px; color: #335c67;">campaign</span>
               <h3 class="card-title font-bold leading-tight text-4-5xl" style="color: #335c67;">欢迎收看</h3>
             </div>
             <div class="card-body flex-1 w-full px-5 pb-5 pt-0" style="min-height: 80px;">
@@ -2614,92 +2782,6 @@ async function handleFetchRepos(config = {}, mainWindow) {
   return { repos, total: repos.length };
 }
 
-/*
-async function handleFetchSelectedReadmes(repos = []) {
-  const selectedRepos = Array.isArray(repos)
-    ? repos.filter(repo => repo?.name)
-    : [];
-
-  if (selectedRepos.length === 0) {
-    return {
-      ok: false,
-      title: 'README 输出',
-      errorLabel: '抓取失败',
-      message: '请先勾选至少一个仓库',
-    };
-  }
-
-  const auth = loadAuth();
-  const token = auth?.accessToken;
-  const sections = ['## README 抓取结果', ''];
-  const failures = [];
-  const repoUrlMap = {};
-  let successCount = 0;
-
-  log(`[README] 开始抓取 ${selectedRepos.length} 个仓库的 README...`, 'info');
-
-  for (let i = 0; i < selectedRepos.length; i++) {
-    const repo = selectedRepos[i];
-    const repoUrl = repo.url || `https://github.com/${repo.name}`;
-    repoUrlMap[repo.name] = repoUrl;
-    log(`[README] [${i + 1}/${selectedRepos.length}] ${repo.name}`, 'info');
-
-    try {
-      const result = await fetchRepoReadme(repo.name, token);
-      if (!result.ok) {
-        failures.push(`${repo.name}: ${result.message}`);
-        log(`[README] ${repo.name} 抓取失败: ${result.message}`, 'error');
-        continue;
-      }
-
-      successCount += 1;
-      log(`[README] ${repo.name} 抓取成功${result.truncated ? ' (已截断)' : ''}`, 'success');
-
-      sections.push(`### ${repo.name}`);
-      sections.push(`仓库链接: ${repoUrl}`);
-      sections.push(`README 文件: ${result.path}`);
-      if (result.truncated) {
-        sections.push('提示: 内容较长，当前仅展示前 20000 个字符。');
-      }
-      sections.push('');
-      sections.push(result.content);
-      sections.push('');
-    } catch (e) {
-      failures.push(`${repo.name}: ${e.message}`);
-      log(`[README] ${repo.name} 抓取失败: ${e.message}`, 'error');
-    }
-  }
-
-  if (failures.length > 0) {
-    sections.push('## 抓取失败');
-    failures.forEach(item => sections.push(`- ${item}`));
-  }
-
-  if (successCount === 0) {
-    return {
-      ok: false,
-      title: 'README 输出',
-      errorLabel: '抓取失败',
-      message: failures[0] || '没有抓取到 README 内容',
-      repoUrlMap,
-    };
-  }
-
-  sections.splice(1, 0, `成功抓取 ${successCount} 个仓库的 README。`);
-  if (failures.length > 0) {
-    sections.splice(2, 0, `失败 ${failures.length} 个仓库，详情见下方。`);
-  }
-
-  return {
-    ok: true,
-    title: 'README 输出',
-    model: `README x${successCount}`,
-    content: sections.join('\n'),
-    repoUrlMap,
-  };
-}
-
-*/
 
 function buildReadmeHtmlUserPrompt(repo, repoUrl, readmeResult) {
   const template = resolvePrompt('readmeHtmlUserPrompt',
@@ -2988,6 +3070,7 @@ async function handleFetchSelectedReadmes(payload = {}) {
   const pipelineUsedAiModels = new Set();
 
   ensureDir(pipelineOutputDir);
+  await ensureMaterialIconsFont();
   log(`[README] 开始生成 README HTML 轮播，共 ${selectedRepos.length} 个仓库`, 'info');
 
   const pipelineRepoUrlMap = Object.fromEntries(selectedRepos.map((repo) => [
@@ -3130,201 +3213,6 @@ async function handleFetchSelectedReadmes(payload = {}) {
     outputDir: pipelineOutputDir,
     entryHtmlPath: pipelineEntryHtmlPath,
     manifestPath: pipelineManifestPath,
-  };
-  const repoUrlMap = {};
-  const failures = [];
-  const successItems = [];
-  const runStamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const outputDir = path.join(README_CAROUSEL_RUNS_DIR, runStamp);
-  const manifestPath = path.join(outputDir, 'manifest.json');
-  const entryHtmlPath = path.join(outputDir, 'index.html');
-  let lastAiModel = aiConfig.model;
-
-  ensureDir(outputDir);
-  log(`[README] 开始生成 README HTML 轮播，共 ${selectedRepos.length} 个仓库`, 'info');
-
-  for (let index = 0; index < selectedRepos.length; index += 1) {
-    const repo = selectedRepos[index];
-    const repoUrl = repo.url || `https://github.com/${repo.name}`;
-    const safeBaseName = sanitizeRepoFileName(repo.name, index);
-    const repoDirName = safeBaseName;
-    const repoDirPath = path.join(outputDir, repoDirName);
-    const selectedImagePaths = Array.isArray(repoImages[repo.name]) ? repoImages[repo.name] : [];
-    repoUrlMap[repo.name] = repoUrl;
-
-    ensureDir(repoDirPath);
-    log(`[README] [${index + 1}/${selectedRepos.length}] 抓取 README: ${repo.name}`, 'info');
-
-    try {
-      const readmeResult = await fetchRepoReadme(repo.name, token);
-      if (!readmeResult.ok) {
-        throw new Error(`README 抓取失败: ${readmeResult.message}`);
-      }
-
-      log(`[README] ${repo.name} README 抓取成功${readmeResult.truncated ? ' (已截断)' : ''}`, 'success');
-      log(`[README] ${repo.name} 开始生成 HTML`, 'info');
-
-      const htmlResult = await requestReadmeHtmlWithRetry({
-        repo,
-        repoUrl,
-        readmeResult,
-        aiConfig,
-        htmlPrompt,
-      });
-
-      if (!htmlResult.ok) {
-        throw new Error(`HTML 生成失败: ${htmlResult.message}`);
-      }
-
-      lastAiModel = htmlResult.model || lastAiModel;
-      const extractedHtml = String(htmlResult.extractedHtml || '').trim();
-
-      const imageCopyResult = copyRepoImagesToOutput(selectedImagePaths, repoDirPath);
-      if (imageCopyResult.imageCount > 0) {
-        log(`[README] ${repo.name} 已复制 ${imageCopyResult.imageCount} 张图片`, 'success');
-      }
-      if (imageCopyResult.skippedPaths.length > 0) {
-        log(`[README] ${repo.name} 有 ${imageCopyResult.skippedPaths.length} 张图片复制失败，已跳过`, 'warn');
-      }
-
-      const htmlFileName = 'index.html';
-      const htmlFilePath = path.join(repoDirPath, htmlFileName);
-      const htmlEntryPath = `${repoDirName}/${htmlFileName}`;
-      const htmlForNarration = extractedHtml.trim();
-      log(`[README] ${repo.name} HTML 已保存: ${htmlEntryPath}`, 'success');
-
-      log(`[README] ${repo.name} 开始生成解说词`, 'info');
-      const narrationResult = await callAiChat(aiConfig, [
-        { role: 'system', content: narrationSystemPrompt },
-        {
-          role: 'user',
-          content: buildReadmeNarrationPrompt(repo, htmlForNarration),
-        },
-      ], {
-        timeout: 180000,
-        maxTokens: 800,
-        temperature: 0.5,
-      });
-
-      if (!narrationResult.ok) {
-        throw new Error(`解说词生成失败: ${narrationResult.message}`);
-      }
-
-      const narrationText = sanitizeAiContent(narrationResult.content).replace(/\s+/g, ' ').trim();
-      if (!narrationText) {
-        throw new Error('解说词生成失败: AI 返回内容为空');
-      }
-
-      log(`[README] ${repo.name} 开始生成 MiniMax TTS`, 'info');
-      const audioResult = await synthesizeTtsToCache(narrationText, ttsConfig);
-      const audioExtension = path.extname(audioResult.audioPath) || `.${ttsConfig.format || 'mp3'}`;
-      const audioFileName = `narration${audioExtension}`;
-      const audioFilePath = path.join(repoDirPath, audioFileName);
-      const audioEntryPath = `${repoDirName}/${audioFileName}`;
-      fs.copyFileSync(audioResult.audioPath, audioFilePath);
-      const finalHtml = injectLocalImageManifestIntoHtml(
-        extractedHtml,
-        imageCopyResult.images,
-        audioResult.durationMs,
-      );
-      fs.writeFileSync(htmlFilePath, finalHtml.trim(), 'utf8');
-      log(`[README] ${repo.name} HTML 宸蹭繚瀛? ${htmlEntryPath}`, 'success');
-      log(`[README] ${repo.name} TTS 已保存: ${audioEntryPath}${audioResult.cached ? ' (复用缓存)' : ''}`, 'success');
-
-      successItems.push({
-        title: repo.name,
-        repoName: repo.name,
-        repoUrl,
-        repoDirName,
-        repoDirPath,
-        htmlFileName,
-        htmlEntryPath,
-        audioFileName,
-        audioEntryPath,
-        audioDurationMs: audioResult.durationMs || null,
-        imageCount: imageCopyResult.imageCount,
-        narrationText,
-        htmlPath: htmlFilePath,
-        audioPath: audioFilePath,
-        readmePath: readmeResult.path,
-      });
-    } catch (error) {
-      failures.push({
-        repoName: repo.name,
-        reason: error.message,
-      });
-      log(`[README] ${repo.name} 处理失败: ${error.message}`, 'error');
-    }
-  }
-
-  if (successItems.length === 0) {
-    return {
-      ok: false,
-      title: 'README HTML 轮播输出',
-      errorLabel: '生成失败',
-      message: failures[0]?.reason || '没有成功生成任何 HTML 文件',
-      repoUrlMap,
-      failures,
-      successCount: 0,
-      failureCount: failures.length,
-      outputDir,
-      entryHtmlPath: '',
-    };
-  }
-
-  const manifest = {
-    generatedAt: new Date().toISOString(),
-    aiModel: lastAiModel,
-    ttsModel: ttsConfig.model,
-    ttsFormat: ttsConfig.format,
-    items: successItems.map((item) => ({
-      title: item.title,
-      repoName: item.repoName,
-      repoUrl: item.repoUrl,
-      repoDirName: item.repoDirName,
-      htmlFileName: item.htmlFileName,
-      htmlEntryPath: item.htmlEntryPath,
-      audioFileName: item.audioFileName,
-      audioEntryPath: item.audioEntryPath,
-      audioDurationMs: item.audioDurationMs || null,
-      imageCount: item.imageCount || 0,
-      readmePath: item.readmePath,
-    })),
-    failures,
-  };
-
-  const pageTurnSoundEntryPath = copyPageTurnSoundToOutput(outputDir);
-  copyFontToOutput(outputDir);
-  if (pageTurnSoundEntryPath) {
-    log(`[README] 已复制切页音效: ${pageTurnSoundEntryPath}`, 'success');
-  } else {
-    log(`[README] 未找到切页音效文件: ${PAGE_TURN_SOUND_FILE_NAME}，轮播入口将不播放切页音`, 'warn');
-  }
-
-  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
-  fs.writeFileSync(entryHtmlPath, buildCarouselIndexHtml(successItems, pageTurnSoundEntryPath, footerFontSize), 'utf8');
-  log(`[README] 轮播入口已生成: ${entryHtmlPath}`, 'success');
-
-  return {
-    ok: true,
-    title: 'README HTML 轮播输出',
-    model: `${lastAiModel || aiConfig.model} / ${ttsConfig.model}`,
-    message: `成功生成 ${successItems.length} 个 HTML 文件`,
-    content: buildReadmeResultSummary({
-      successItems,
-      failures,
-      outputDir,
-      entryHtmlPath,
-      aiModel: lastAiModel || aiConfig.model,
-      ttsFormat: ttsConfig.format,
-    }),
-    repoUrlMap,
-    failures,
-    successCount: successItems.length,
-    failureCount: failures.length,
-    outputDir,
-    entryHtmlPath,
-    manifestPath,
   };
 }
 
@@ -5024,11 +4912,10 @@ async function handlePushGlobalRssUpload(payload) {
     const juyaDir = 'E:/Downloads/juya-ai-daily-master';
     const backupDir = path.join(juyaDir, 'BACKUP');
     if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir);
-    // 清除上次的旧文件，但保留 .gitkeep
-    const oldFiles = fs.readdirSync(backupDir).filter(f => f.endsWith('.md'));
+    // 只清除今日的旧文件（避免同日重复上传导致重复），保留历史日期的所有文件
+    const todayMdSuffix = `_${todayStr}.md`;
+    const oldFiles = fs.readdirSync(backupDir).filter(f => f.endsWith(todayMdSuffix));
     for (const f of oldFiles) fs.unlinkSync(path.join(backupDir, f));
-
-    const todayStr = new Date().toISOString().slice(0, 10);
 
     // 1) 始终生成单仓库文件（作为备份和回落）
     let mdCount = 0;
@@ -5646,6 +5533,188 @@ function handleLoadRepoHistory(page = 1, pageSize = 200) {
   };
 }
 
+// --- Resource Cache (fonts for offline carousel rendering) ---
+
+function handleCheckFontCache() {
+  const resources = [
+    {
+      key: 'material-icons',
+      name: 'Material Icons 字体',
+      desc: '图标',
+      sizeKb: 120,
+      cached: fs.existsSync(MATERIAL_ICONS_SOURCE_PATH),
+    },
+  ];
+  return { ok: true, resources };
+}
+
+async function handleDownloadFontCache() {
+  const results = [];
+  try {
+    await ensureMaterialIconsFont();
+    const r = { key: 'material-icons', path: MATERIAL_ICONS_SOURCE_PATH };
+    results.push({ key: r.key, cached: fs.existsSync(r.path) });
+    const allCached = results.every((r) => r.cached);
+    return { ok: allCached, message: allCached ? '全部缓存完成' : '部分资源下载失败', results };
+  } catch (e) {
+    return { ok: false, message: e.message };
+  }
+}
+
+// --- Render Test (NVENC / CPU encode pipeline check) ---
+
+async function handleTestRender() {
+  const results = {
+    ffmpegFound: false,
+    nvencAvailable: false,
+    nvencSuccess: false,
+    nvencError: '',
+    nvencDurationMs: 0,
+    cpuSuccess: false,
+    cpuError: '',
+    cpuDurationMs: 0,
+    message: '',
+  };
+
+  const ffmpegPath = resolveFfmpegPath();
+  if (!ffmpegPath) {
+    results.message = '未找到 ffmpeg，请重新执行 npm install';
+    return { ok: true, results };
+  }
+  results.ffmpegFound = true;
+
+  // Check NVENC encoder availability
+  try {
+    const encCheck = await new Promise((resolve) => {
+      const child = spawn(ffmpegPath, ['-hide_banner', '-encoders'], { windowsHide: true });
+      let stdout = '';
+      child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+      child.on('close', () => resolve(stdout));
+      child.on('error', () => resolve(''));
+    });
+    results.nvencAvailable = /h264_nvenc/.test(encCheck);
+  } catch {
+    results.nvencAvailable = false;
+  }
+
+  if (!results.nvencAvailable) {
+    results.message = '当前系统未检测到 NVENC 编码器 (h264_nvenc)，将使用 CPU 软编码';
+    // Still test CPU path
+  } else {
+    results.message = 'NVENC 编码器已检测到';
+  }
+
+  // Generate test source (2s testsrc 4K) and test encode
+  const os = require('os');
+  const tmpDir = path.join(os.tmpdir(), `github-scout-render-test-${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const testSource = path.join(tmpDir, 'test-source.mp4');
+  const nvencOut = path.join(tmpDir, 'test-nvenc.mp4');
+  const cpuOut = path.join(tmpDir, 'test-cpu.mp4');
+
+  try {
+    // Generate test source: 2s 4K testsrc + silent audio
+    log('[渲染测试] 生成测试源...', 'info');
+    await new Promise((resolve, reject) => {
+      const child = spawn(ffmpegPath, [
+        '-y', '-hide_banner', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', 'testsrc=duration=2:size=3840x2160:rate=30',
+        '-f', 'lavfi', '-i', 'anullsrc=duration=2:r=48000',
+        '-shortest', '-c:v', 'libx264', '-crf', '23', '-preset', 'ultrafast',
+        '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k',
+        testSource,
+      ], { windowsHide: true });
+      child.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`测试源生成失败，退出码 ${code}`));
+      });
+      child.on('error', reject);
+    });
+    log('[渲染测试] 测试源已生成', 'success');
+
+    // Test NVENC encode
+    if (results.nvencAvailable) {
+      log('[渲染测试] 测试 NVENC 编码...', 'info');
+      const nvencStart = Date.now();
+      try {
+        await new Promise((resolve, reject) => {
+          let stderr = '';
+          const child = spawn(ffmpegPath, [
+            '-y', '-hide_banner', '-loglevel', 'error',
+            '-i', testSource,
+            ...NVENC_ENCODE_ARGS,
+            nvencOut,
+          ], { windowsHide: true });
+          child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+          child.on('close', (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(stderr.trim() || `NVENC 编码失败，退出码 ${code}`));
+          });
+          child.on('error', reject);
+        });
+        results.nvencDurationMs = Date.now() - nvencStart;
+        results.nvencSuccess = true;
+        log(`[渲染测试] NVENC 编码成功 (${results.nvencDurationMs}ms)`, 'success');
+      } catch (e) {
+        results.nvencDurationMs = Date.now() - nvencStart;
+        results.nvencError = e.message;
+        log(`[渲染测试] NVENC 编码失败: ${e.message}`, 'error');
+      }
+    }
+
+    // Test CPU encode (always run so we have comparative data)
+    log('[渲染测试] 测试 CPU 编码...', 'info');
+    const cpuStart = Date.now();
+    try {
+      await new Promise((resolve, reject) => {
+        let stderr = '';
+        const child = spawn(ffmpegPath, [
+          '-y', '-hide_banner', '-loglevel', 'error',
+          '-i', testSource,
+          ...CPU_ENCODE_ARGS,
+          cpuOut,
+        ], { windowsHide: true });
+        child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+        child.on('close', (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(stderr.trim() || `CPU 编码失败，退出码 ${code}`));
+        });
+        child.on('error', reject);
+      });
+      results.cpuDurationMs = Date.now() - cpuStart;
+      results.cpuSuccess = true;
+      log(`[渲染测试] CPU 编码成功 (${results.cpuDurationMs}ms)`, 'success');
+    } catch (e) {
+      results.cpuDurationMs = Date.now() - cpuStart;
+      results.cpuError = e.message;
+      log(`[渲染测试] CPU 编码失败: ${e.message}`, 'error');
+    }
+
+    // Build summary message
+    if (results.nvencSuccess) {
+      const speedup = results.cpuSuccess
+        ? (results.cpuDurationMs / Math.max(results.nvencDurationMs, 1)).toFixed(1)
+        : '?';
+      results.message = `NVENC 硬件加速正常，比 CPU 快 ${speedup}x`;
+    } else if (results.nvencAvailable && !results.nvencSuccess) {
+      results.message = `NVENC 编码测试失败，将回退 CPU: ${results.nvencError}`;
+    } else {
+      results.message = results.cpuSuccess
+        ? 'NVENC 不可用，CPU 软编码正常'
+        : '所有编码路径均失败';
+    }
+  } catch (e) {
+    results.message = `测试异常: ${e.message}`;
+    log(`[渲染测试] 异常: ${e.message}`, 'error');
+  } finally {
+    // Cleanup
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+
+  log(`[渲染测试] 结果: ${results.message}`, results.nvencSuccess || results.cpuSuccess ? 'success' : 'error');
+  return { ok: true, results };
+}
+
 module.exports = {
   handleFetchRepos, handleAnalyzeWithAI, handleFetchSelectedReadmes, handleTestConnection,
   patchLatestCarouselFooterFontSize, handleLoadRepoHistory,
@@ -5660,5 +5729,8 @@ module.exports = {
   handleGenerateDailyArticle,
   handleLoadAllPrompts, handleSavePrompt, handleResetPrompt,
   handleGetPromptHistory, handleRollbackPrompt,
+  handleCheckFontCache, handleDownloadFontCache,
+  handleTestRender,
+  NVENC_ENCODE_ARGS, CPU_ENCODE_ARGS,
   logEmitter, log,
 };

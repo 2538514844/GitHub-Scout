@@ -50,6 +50,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPromptHistory: (key) => ipcRenderer.invoke('get-prompt-history', key),
   rollbackPrompt: (key, versionIndex) => ipcRenderer.invoke('rollback-prompt', key, versionIndex),
 
+  // Font cache
+  checkFontCache: () => ipcRenderer.invoke('check-font-cache'),
+  downloadFontCache: () => ipcRenderer.invoke('download-font-cache'),
+
+  // Render test
+  testRender: () => ipcRenderer.invoke('test-render'),
+
   onLogEntry: (callback) => {
     ipcRenderer.on('log-entry', (_, entry) => callback(entry));
   },
