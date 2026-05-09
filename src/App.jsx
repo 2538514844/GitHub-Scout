@@ -13,6 +13,7 @@ import PresentationStudio from './components/PresentationStudio';
 import RepoHistoryPanel from './components/RepoHistoryPanel';
 import FontCachePanel from './components/FontCachePanel';
 import RenderTestPanel from './components/RenderTestPanel';
+import LocalRecordPanel from './components/LocalRecordPanel';
 import Sidebar from './components/Sidebar';
 import useUiSwitchSound from './hooks/useUiSwitchSound';
 
@@ -989,6 +990,9 @@ function App() {
             )}
             {activeSidebarTab === 'render-test' && (
               <RenderTestPanel />
+            )}
+            {activeSidebarTab === 'local-record' && (
+              <LocalRecordPanel />
             )}
           </Sidebar>
         )}

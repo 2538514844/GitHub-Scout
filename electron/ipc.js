@@ -5538,6 +5538,27 @@ function handleLoadRepoHistory(page = 1, pageSize = 200) {
   };
 }
 
+function handleListCarouselHtmls() {
+  const sessions = [];
+  if (!fs.existsSync(README_CAROUSEL_RUNS_DIR)) return { ok: true, sessions };
+  const entries = fs.readdirSync(README_CAROUSEL_RUNS_DIR, { withFileTypes: true });
+  for (const entry of entries.reverse()) {
+    if (!entry.isDirectory()) continue;
+    const indexPath = path.join(README_CAROUSEL_RUNS_DIR, entry.name, 'index.html');
+    if (!fs.existsSync(indexPath)) continue;
+    const sessionPath = path.join(README_CAROUSEL_RUNS_DIR, entry.name);
+    const subDirs = fs.readdirSync(sessionPath, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && d.name !== '00-opening')
+      .length;
+    sessions.push({
+      name: entry.name,
+      indexPath,
+      repoCount: subDirs,
+    });
+  }
+  return { ok: true, sessions };
+}
+
 // --- Resource Cache (fonts for offline carousel rendering) ---
 
 function handleCheckFontCache() {
@@ -5736,6 +5757,7 @@ module.exports = {
   handleGetPromptHistory, handleRollbackPrompt,
   handleCheckFontCache, handleDownloadFontCache,
   handleTestRender,
+  handleListCarouselHtmls,
   NVENC_ENCODE_ARGS, CPU_ENCODE_ARGS,
   logEmitter, log,
 };

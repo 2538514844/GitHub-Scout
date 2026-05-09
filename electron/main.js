@@ -36,6 +36,7 @@ const {
   handleCheckFontCache,
   handleDownloadFontCache,
   handleTestRender,
+  handleListCarouselHtmls,
   NVENC_ENCODE_ARGS,
   CPU_ENCODE_ARGS,
   handleLoadAllPrompts,
@@ -511,6 +512,9 @@ app.whenReady().then(() => {
 
   // Render test
   ipcMain.handle('test-render', () => handleTestRender());
+
+  // Local record
+  ipcMain.handle('list-carousel-htmls', () => handleListCarouselHtmls());
 
   logEmitter.on('log', (entry) => {
     if (mainWindow && !mainWindow.isDestroyed()) {

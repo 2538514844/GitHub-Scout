@@ -57,6 +57,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Render test
   testRender: () => ipcRenderer.invoke('test-render'),
 
+  // Local record
+  listCarouselHtmls: () => ipcRenderer.invoke('list-carousel-htmls'),
+
   onLogEntry: (callback) => {
     ipcRenderer.on('log-entry', (_, entry) => callback(entry));
   },
