@@ -51,8 +51,9 @@ const ENCODE_VF = 'scale=3840:2160:force_original_aspect_ratio=decrease,pad=3840
 const NVENC_ENCODE_ARGS = [
   '-map', '0:v:0', '-map', '0:a?',
   '-c:v', 'h264_nvenc', '-preset', 'p4',
+  '-r', '30',
   // NO -level:v here — see warning above
-  '-rc', 'constqp', '-qp', '18', '-g', '60',
+  '-qp', '18', '-g', '60',
   '-vf', ENCODE_VF,
   '-c:a', 'aac', '-b:a', '320k', '-movflags', '+faststart',
 ];
