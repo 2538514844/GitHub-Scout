@@ -43,11 +43,15 @@ function resolveFfmpegPath() {
 }
 
 // Shared encode args — single source of truth for both test and production transcode
+// WARNING: Do NOT add -level:v to NVENC args. CQP mode does not enforce VBV bitrate
+// constraints, so a level parameter is unnecessary. GTX 1660 drivers will reject any
+// explicit level in CQP mode with: InitializeEncoder failed: invalid param (8): Invalid Level.
 const ENCODE_VF = 'scale=3840:2160:force_original_aspect_ratio=decrease,pad=3840:2160:(ow-iw)/2:(oh-ih)/2';
 
 const NVENC_ENCODE_ARGS = [
   '-map', '0:v:0', '-map', '0:a?',
-  '-c:v', 'h264_nvenc', '-preset', 'p4', '-level:v', '5.2',
+  '-c:v', 'h264_nvenc', '-preset', 'p4',
+  // NO -level:v here — see warning above
   '-rc', 'constqp', '-qp', '18', '-g', '60',
   '-vf', ENCODE_VF,
   '-c:a', 'aac', '-b:a', '320k', '-movflags', '+faststart',
