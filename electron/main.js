@@ -145,12 +145,20 @@ function transcodeToMp4(sourcePath, targetPath) {
         await runFfmpeg(nvencArgs, 'NVENC');
         resolve();
       } catch (nvencErr) {
-        logEmitter.emit('log', { time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level: 'warn', message: `[录制] NVENC 失败，回退 CPU 编码: ${nvencErr.message}` });
+        logEmitter.emit('log', { time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level: 'warn', message: `[录制] NVENC 初次失败: ${nvencErr.message}` });
+        // Retry NVENC once — intermittent "Invalid Level" can occur on cold init
         try {
-          await runFfmpeg(cpuArgs, 'CPU');
+          logEmitter.emit('log', { time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level: 'info', message: '[录制] 正在重试 NVENC...' });
+          await runFfmpeg(nvencArgs, 'NVENC (重试)');
           resolve();
-        } catch (cpuErr) {
-          reject(cpuErr);
+        } catch (retryErr) {
+          logEmitter.emit('log', { time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level: 'warn', message: `[录制] NVENC 重试仍失败，回退 CPU 编码: ${retryErr.message}` });
+          try {
+            await runFfmpeg(cpuArgs, 'CPU');
+            resolve();
+          } catch (cpuErr) {
+            reject(cpuErr);
+          }
         }
       }
     })();
